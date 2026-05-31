@@ -21,6 +21,7 @@
 - [x] 4.1 Implement Feishu webhook sender and callback command router.
 - [x] 4.2 Add CLI commands for ingestion, screening, harness, and Feishu server.
 - [x] 4.3 Add logs, run reports, README, and environment example.
+- [x] 4.4 Add runtime doctor, daily-run entrypoint, cron template, and Feishu latest/why/methodology/doctor commands.
 
 ## 5. Verification and Publishing
 

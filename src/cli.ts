@@ -2,7 +2,7 @@ import { getConfig } from "./config.js";
 import { fetchTopicDiggPostSummaries, serenityPostsToSources } from "./connectors/serenity.js";
 import { ingestLocalReportSources } from "./connectors/reports.js";
 import { createFeishuServer } from "./feishu/feishu.js";
-import { renderFeishuSummary, writeScreenReport } from "./report.js";
+import { explainCandidate, findLatestRun, renderFeishuSummary, writeScreenReport } from "./report.js";
 import { initializeKnowledgebase } from "./rag/obsidian.js";
 import { screenCandidates } from "./screener.js";
 import { loadSourceRegistry, mergeSources, saveSourceRegistry, seedSourceRegistry } from "./sources/registry.js";
@@ -11,6 +11,8 @@ import { runHarness } from "./harness/run.js";
 import { appendJsonl, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuMarkdown } from "./feishu/feishu.js";
 import { createTradingAgent } from "./agent/trading-agent.js";
+import { methodologySummary } from "./methodology.js";
+import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 
 async function ingestSerenity() {
   const config = getConfig();
@@ -45,12 +47,33 @@ async function screen() {
   }
 }
 
+async function dailyRun() {
+  await ingestSerenity();
+  await initObsidian();
+  await screen();
+  const doctorReport = await diagnoseRuntime();
+  await appendJsonl("runs/doctor.jsonl", {
+    type: "doctor",
+    at: new Date().toISOString(),
+    ok: doctorReport.ok,
+    checks: doctorReport.checks,
+  });
+  console.log(renderDoctorReport(doctorReport));
+  if (!doctorReport.ok) process.exitCode = 1;
+}
+
 async function harness() {
   const result = await runHarness();
   for (const item of result.checks) {
     console.log(`${item.ok ? "✓" : "✗"} ${item.name}: ${item.detail}`);
   }
   if (!result.ok) process.exitCode = 1;
+}
+
+async function doctor() {
+  const report = await diagnoseRuntime();
+  console.log(renderDoctorReport(report));
+  if (!report.ok) process.exitCode = 1;
 }
 
 async function showAgent() {
@@ -72,13 +95,22 @@ async function feishuServer() {
         const sources = await loadSourceRegistry();
         return sources.slice(0, 20).map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n");
       },
+      "/latest": async () => {
+        const run = await findLatestRun();
+        return run ? renderFeishuSummary(run) : "No screen report JSON found under reports/. Run /screen first.";
+      },
       "/harness": async () => {
         const result = await runHarness();
         return result.checks.map((item) => `${item.ok ? "✓" : "✗"} ${item.name}`).join("\n");
       },
       "/why": async (code: string) => {
-        return `Use the latest report JSON and find candidate ${code}. The response includes prior, evidence deltas, posterior, risks, and coverage gaps.`;
+        const run = await findLatestRun();
+        if (!run) return "No screen report JSON found under reports/. Run /screen first.";
+        if (!code.trim()) return "Usage: /why <code-or-name>";
+        return explainCandidate(run, code);
       },
+      "/methodology": () => methodologySummary(),
+      "/doctor": async () => renderDoctorReport(await diagnoseRuntime()),
     },
   });
   console.log(`Feishu callback server listening on ${config.feishuPort}`);
@@ -96,8 +128,17 @@ async function main() {
     case "screen":
       await screen();
       break;
+    case "daily-run":
+      await dailyRun();
+      break;
     case "run-harness":
       await harness();
+      break;
+    case "doctor":
+      await doctor();
+      break;
+    case "cron":
+      console.log(renderCronExample());
       break;
     case "feishu-server":
       await feishuServer();
@@ -106,7 +147,7 @@ async function main() {
       await showAgent();
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|run-harness|feishu-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|daily-run|doctor|cron|run-harness|feishu-server|agent>");
       process.exitCode = 1;
   }
 }

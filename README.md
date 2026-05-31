@@ -23,6 +23,7 @@ cp .env.example .env
 npm run ingest:serenity
 npm run obsidian:init
 npm run screen
+npm run doctor
 npm run review
 ```
 
@@ -31,6 +32,9 @@ npm run review
 - `npm run ingest:serenity`: seed source registry and capture accessible Serenity public post summaries.
 - `npm run obsidian:init`: create the Obsidian RAG folder and source notes.
 - `npm run screen`: fetch A-share market snapshot and write a candidate report under `reports/`.
+- `npm run daily-run`: ingest sources, refresh Obsidian, screen candidates, and run the runtime doctor.
+- `npm run doctor`: check local runtime prerequisites and coverage gaps.
+- `npm run cron`: print a weekday crontab example for `daily-run`.
 - `npm run feishu:server`: start a Feishu callback server.
 - `npm run review`: typecheck, unit tests, and deterministic harness.
 
@@ -39,9 +43,16 @@ npm run review
 Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_TOKEN` and expose `npm run feishu:server` for callback commands:
 
 - `/screen`
+- `/latest`
 - `/why <code>`
 - `/sources`
+- `/methodology`
+- `/doctor`
 - `/harness`
+
+## Operations
+
+For long-running monitoring, run `npm run cron` and install the printed crontab after editing the time if needed. `daily-run` appends operational evidence to `runs/`, writes fresh Markdown/JSON reports under `reports/`, and optionally sends Feishu notifications when `FEISHU_WEBHOOK_URL` is configured.
 
 ## Source Tiers
 

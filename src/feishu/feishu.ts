@@ -36,7 +36,7 @@ export async function handleFeishuCallback(
   const [command = "", ...rest] = text.split(/\s+/);
   const handler = commands[command.toLowerCase()];
   if (!handler) {
-    return { status: 200, body: { text: "Supported commands: /screen, /why <code>, /sources, /harness" } };
+    return { status: 200, body: { text: "Supported commands: /screen, /latest, /why <code>, /sources, /methodology, /doctor, /harness" } };
   }
   const result = await handler(rest.join(" "));
   return { status: 200, body: { text: result } };

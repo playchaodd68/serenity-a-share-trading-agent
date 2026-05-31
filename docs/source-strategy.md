@@ -13,3 +13,9 @@
 - High: P0 + independent P1/P2 corroboration + positive evidence updates + explicit downside risks.
 - Medium: theme and market evidence plus P1/P2 support, but incomplete P0.
 - Low: social/market clue only, missing primary validation.
+
+## Operating Discipline
+
+- Run `npm run ingest:serenity` after adding licensed reports to `REPORT_INBOX`.
+- Run `npm run doctor` before trusting a new report; warnings about missing P0 evidence mean outputs remain research candidates only.
+- Use Feishu `/why <code>` to inspect the exact prior, posterior, component scores, risks, and coverage gaps from the latest JSON report.

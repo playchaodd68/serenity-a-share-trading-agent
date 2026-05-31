@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { Candidate, ScreenRun } from "./types.js";
-import { ensureDir, writeJsonFile } from "./utils/fs.js";
+import { ensureDir, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import fs from "node:fs/promises";
 
 function candidateMarkdown(candidate: Candidate, index: number): string {
@@ -58,4 +58,54 @@ export function renderFeishuSummary(run: ScreenRun): string {
     .map((candidate, index) => `${index + 1}. ${candidate.stock.code} ${candidate.stock.name} - ${candidate.score.toFixed(1)} (${candidate.confidence})`)
     .join("\n");
   return `**A股产业瓶颈筛选完成**\n\nRun: ${run.runId}\nScanned: ${run.totalStocksScanned}\n\n${top}\n\nReport: ${run.reportPath ?? "not written"}`;
+}
+
+export async function findLatestRun(outputDir = "reports"): Promise<ScreenRun | null> {
+  try {
+    const entries = await fs.readdir(outputDir, { withFileTypes: true });
+    const jsonFiles = entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith("screen-") && entry.name.endsWith(".json"))
+      .map((entry) => path.join(outputDir, entry.name))
+      .sort()
+      .reverse();
+    for (const file of jsonFiles) {
+      const run = await readJsonFile<ScreenRun | null>(file, null);
+      if (run?.runId) return run;
+    }
+    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export function explainCandidate(run: ScreenRun, codeOrName: string): string {
+  const query = codeOrName.trim().toLowerCase();
+  const candidate = run.candidates.find((item) => item.stock.code.toLowerCase() === query || item.stock.name.toLowerCase().includes(query));
+  if (!candidate) return `No candidate matched "${codeOrName}" in run ${run.runId}.`;
+
+  const trace = candidate.trace;
+  const components = trace.components.map((item) => `- ${item.name}: ${item.score}/${item.maxScore} - ${item.reason}`).join("\n");
+  const risks = trace.risks.map((risk) => `- ${risk}`).join("\n");
+  const gaps = trace.coverageGaps.map((gap) => `- ${gap}`).join("\n");
+  return `# ${candidate.stock.code} ${candidate.stock.name}
+
+- Run: ${run.runId}
+- Score: ${candidate.score.toFixed(1)}
+- Confidence: ${candidate.confidence}
+- Prior: ${trace.priorScore.toFixed(1)}
+- Posterior: ${trace.posteriorScore.toFixed(1)}
+- Expected value score: ${trace.expectedValueScore.toFixed(1)}
+
+## Components
+
+${components}
+
+## Risks
+
+${risks}
+
+## Coverage Gaps
+
+${gaps}`;
 }

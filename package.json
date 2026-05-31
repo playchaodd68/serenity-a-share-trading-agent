@@ -11,6 +11,9 @@
     "obsidian:init": "tsx src/cli.ts init-obsidian",
     "ingest:serenity": "tsx src/cli.ts ingest-serenity",
     "screen": "tsx src/cli.ts screen",
+    "daily-run": "tsx src/cli.ts daily-run",
+    "doctor": "tsx src/cli.ts doctor",
+    "cron": "tsx src/cli.ts cron",
     "feishu:server": "tsx src/cli.ts feishu-server"
   },
   "keywords": [
