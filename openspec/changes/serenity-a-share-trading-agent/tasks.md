@@ -29,4 +29,4 @@
 
 - [x] 5.1 Add unit tests for scoring, registry, Obsidian, Feishu, and harness.
 - [x] 5.2 Run typecheck, tests, harness, and a code-review pass.
-- [ ] 5.3 Initialize/push a new GitHub repository after verification succeeds.
+- [x] 5.3 Initialize/push a new GitHub repository after verification succeeds.
