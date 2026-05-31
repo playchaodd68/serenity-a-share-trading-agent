@@ -3,6 +3,7 @@ dist/
 vendor/
 .env
 runs/*.jsonl
+runs/chat-sessions/
 reports/*.json
 reports/*.md
 !reports/.gitkeep

@@ -215,7 +215,13 @@ export async function runInteractiveChat(args = process.argv.slice(3)): Promise<
 
   try {
     while (true) {
-      const line = (await rl.question("you> ")).trim();
+      let line: string;
+      try {
+        line = (await rl.question("you> ")).trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ERR_USE_AFTER_CLOSE") break;
+        throw error;
+      }
       if (!line) continue;
       if (line === "/exit" || line === "/quit") break;
       if (line === "/help") {
