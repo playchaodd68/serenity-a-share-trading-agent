@@ -1,0 +1,10 @@
+node_modules/
+dist/
+vendor/
+.env
+runs/*.jsonl
+reports/*.json
+reports/*.md
+!reports/.gitkeep
+data/source-registry.json
+data/serenity-posts.json

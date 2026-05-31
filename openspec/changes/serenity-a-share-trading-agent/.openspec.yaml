@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-05-31
+goal: Personal A-share industry research agent with traceable methodology, RAG
+  knowledgebase, periodic candidate discovery, Feishu interaction, and long-term
+  GitHub operation.

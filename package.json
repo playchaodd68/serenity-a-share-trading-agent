@@ -1,0 +1,43 @@
+{
+  "name": "serenity-a-share-trading-agent",
+  "version": "1.0.0",
+  "description": "Pi-based A-share industry research agent using Serenity-style supply-chain chokepoint methodology.",
+  "main": "dist/cli.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --run",
+    "harness": "tsx src/cli.ts run-harness",
+    "review": "npm run typecheck && npm run test && npm run harness",
+    "obsidian:init": "tsx src/cli.ts init-obsidian",
+    "ingest:serenity": "tsx src/cli.ts ingest-serenity",
+    "screen": "tsx src/cli.ts screen",
+    "feishu:server": "tsx src/cli.ts feishu-server"
+  },
+  "keywords": [
+    "a-share",
+    "trading-agent",
+    "rag",
+    "feishu",
+    "pi-agent",
+    "obsidian"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.78.0",
+    "@earendil-works/pi-ai": "0.78.0",
+    "dotenv": "17.2.3",
+    "typebox": "1.1.38",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
