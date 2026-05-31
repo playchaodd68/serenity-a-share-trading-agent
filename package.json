@@ -14,7 +14,10 @@
     "daily-run": "tsx src/cli.ts daily-run",
     "doctor": "tsx src/cli.ts doctor",
     "cron": "tsx src/cli.ts cron",
-    "feishu:server": "tsx src/cli.ts feishu-server"
+    "feishu:server": "tsx src/cli.ts feishu-server",
+    "agent": "tsx src/cli.ts agent",
+    "chat": "tsx src/cli.ts chat",
+    "chat:server": "tsx src/cli.ts chat-server"
   },
   "keywords": [
     "a-share",

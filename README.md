@@ -13,6 +13,8 @@ This project emits research candidates and evidence traces. It does not place or
 - Obsidian RAG initializer: default `/Users/apple/Documents/HenryXu/Serenity-A股产业投研`
 - Source registry: `data/source-registry.json`
 - Feishu webhook/callback support
+- Hermes-style local chatbot: CLI REPL and HTTP API backed by Pi Agent state
+- Default live model: DeepSeek V4 Pro through Pi's `deepseek` provider
 - Deterministic harness and tests
 
 ## Setup
@@ -20,6 +22,7 @@ This project emits research candidates and evidence traces. It does not place or
 ```bash
 npm install
 cp .env.example .env
+# edit .env and set DEEPSEEK_API_KEY
 npm run ingest:serenity
 npm run obsidian:init
 npm run screen
@@ -36,7 +39,37 @@ npm run review
 - `npm run doctor`: check local runtime prerequisites and coverage gaps.
 - `npm run cron`: print a weekday crontab example for `daily-run`.
 - `npm run feishu:server`: start a Feishu callback server.
+- `npm run agent`: print Pi agent model/tool metadata.
+- `npm run chat`: start a local terminal chatbot using the Pi agent runtime.
+- `npm run chat:server`: start a local HTTP chatbot at `http://localhost:8788`.
 - `npm run review`: typecheck, unit tests, and deterministic harness.
+
+## Local Chatbot
+
+The live agent defaults to:
+
+```text
+TRADING_AGENT_MODEL_PROVIDER=deepseek
+TRADING_AGENT_MODEL=deepseek-v4-pro
+DEEPSEEK_API_KEY=<your key>
+```
+
+Terminal mode:
+
+```bash
+npm run chat -- --session henry
+```
+
+HTTP mode:
+
+```bash
+npm run chat:server
+curl -X POST http://localhost:8788/chat \
+  -H 'content-type: application/json' \
+  -d '{"sessionId":"henry","message":"用 Serenity 方法论筛选 A 股候选，并说明证据缺口"}'
+```
+
+The browser UI is available at `http://localhost:8788/`. Session transcripts are persisted under `runs/chat-sessions/` so the same session can keep context across restarts.
 
 ## Feishu
 

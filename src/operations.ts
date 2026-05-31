@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { findEnvKeys, getModel } from "@earendil-works/pi-ai";
 import { getConfig, knowledgebasePath, type AppConfig } from "./config.js";
 import { findLatestRun } from "./report.js";
 import { mergeSources } from "./sources/registry.js";
@@ -38,6 +39,8 @@ export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<
   const sourceRegistryPath = path.resolve("data/source-registry.json");
   const persistedSources = await readJsonFile<SourceRecord[]>(sourceRegistryPath, []);
   const sources = mergeSources(persistedSources, SEED_SOURCES);
+  const configuredModel = getModel(config.modelProvider as any, config.modelName as any);
+  const modelEnvKeys = findEnvKeys(config.modelProvider as any);
   const tierCounts = sources.reduce<Record<SourceTier, number>>(
     (counts, source) => {
       counts[source.tier] += 1;
@@ -55,6 +58,8 @@ export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<
     check("latest-screen-report", latestRun != null, "warning", latestRun?.reportPath ?? "no screen report JSON found under reports/"),
     check("feishu-webhook", Boolean(config.feishuWebhookUrl), "info", config.feishuWebhookUrl ? "configured" : "not configured"),
     check("feishu-callback-token", Boolean(config.feishuVerificationToken), "info", config.feishuVerificationToken ? "configured" : "not configured"),
+    check("model-config", Boolean(configuredModel), "error", `${config.modelProvider}/${config.modelName}`),
+    check("model-api-key", Boolean(modelEnvKeys?.length), "warning", modelEnvKeys?.join(", ") ?? `no API key found for provider ${config.modelProvider}`),
   ];
 
   return {

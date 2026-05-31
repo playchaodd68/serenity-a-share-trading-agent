@@ -1,5 +1,5 @@
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
-import { getModel, Type } from "@earendil-works/pi-ai";
+import { getModel, Type, type Model } from "@earendil-works/pi-ai";
 import { getConfig } from "../config.js";
 import { methodologySummary } from "../methodology.js";
 import { initializeKnowledgebase } from "../rag/obsidian.js";
@@ -83,7 +83,10 @@ export function createTradingAgentTools(): AgentTool[] {
 export function createTradingAgent() {
   const config = getConfig();
   const tools = createTradingAgentTools();
-  const model = getModel(config.modelProvider as any, config.modelName as any);
+  const model = getModel(config.modelProvider as any, config.modelName as any) as Model<any> | undefined;
+  if (!model) {
+    throw new Error(`Unknown model: ${config.modelProvider}/${config.modelName}. Check TRADING_AGENT_MODEL_PROVIDER and TRADING_AGENT_MODEL.`);
+  }
   const agent = new Agent({
     initialState: {
       systemPrompt: TRADING_AGENT_SYSTEM_PROMPT,

@@ -11,6 +11,7 @@ import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuMarkdown } from "./feishu/feishu.js";
 import { createTradingAgent } from "./agent/trading-agent.js";
+import { runInteractiveChat, startChatHttpServer } from "./chatbot/chatbot.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 
@@ -151,11 +152,17 @@ async function main() {
     case "feishu-server":
       await feishuServer();
       break;
+    case "chat":
+      await runInteractiveChat();
+      break;
+    case "chat-server":
+      await startChatHttpServer();
+      break;
     case "agent":
       await showAgent();
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|daily-run|doctor|cron|run-harness|feishu-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
       process.exitCode = 1;
   }
 }

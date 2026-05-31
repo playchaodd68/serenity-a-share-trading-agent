@@ -10,6 +10,7 @@ export interface AppConfig {
   feishuWebhookUrl?: string;
   feishuVerificationToken?: string;
   feishuPort: number;
+  chatPort: number;
   modelProvider: string;
   modelName: string;
 }
@@ -31,8 +32,9 @@ export function getConfig(): AppConfig {
     feishuWebhookUrl: process.env.FEISHU_WEBHOOK_URL,
     feishuVerificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
     feishuPort: numberEnv("FEISHU_PORT", 8787),
-    modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "openai",
-    modelName: process.env.TRADING_AGENT_MODEL ?? "gpt-4o-mini",
+    chatPort: numberEnv("CHAT_SERVER_PORT", 8788),
+    modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "deepseek",
+    modelName: process.env.TRADING_AGENT_MODEL ?? "deepseek-v4-pro",
   };
 }
 
