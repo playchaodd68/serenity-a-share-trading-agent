@@ -14,6 +14,8 @@
 - Medium: theme and market evidence plus P1/P2 support, but incomplete P0.
 - Low: social/market clue only, missing primary validation.
 
+Generic P0 directories such as CNINFO, SSE, SZSE, and investor-relation portals are only source-entry registries. They do not count as candidate-level P0 evidence until a specific company filing, exchange announcement, annual report, or investor-response record is registered for that candidate or bottleneck.
+
 ## Operating Discipline
 
 - Run `npm run ingest:serenity` after adding licensed reports to `REPORT_INBOX`.

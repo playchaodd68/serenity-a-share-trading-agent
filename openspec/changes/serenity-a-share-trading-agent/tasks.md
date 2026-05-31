@@ -3,12 +3,14 @@
 - [x] 1.1 Capture Serenity source metadata from X Article, profile, TopicDigg mirror, and related public summaries.
 - [x] 1.2 Encode the chokepoint methodology as a typed scoring rubric and evidence taxonomy.
 - [x] 1.3 Generate canonical methodology notes into the Obsidian RAG folder.
+- [x] 1.4 Gate confidence on candidate-specific P0 evidence instead of generic primary-source directories.
 
 ## 2. Knowledgebase and Connectors
 
 - [x] 2.1 Implement Obsidian folder initialization and source registry persistence.
 - [x] 2.2 Implement public A-share snapshot connector.
 - [x] 2.3 Implement local report/source manifest ingestion for sell-side reports and high-quality information.
+- [x] 2.4 Register A-share primary-source directories and keep Serenity ingestion resilient to mirror failures.
 
 ## 3. Agent and Harness
 

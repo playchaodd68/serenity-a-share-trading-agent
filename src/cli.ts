@@ -8,7 +8,7 @@ import { screenCandidates } from "./screener.js";
 import { loadSourceRegistry, mergeSources, saveSourceRegistry, seedSourceRegistry } from "./sources/registry.js";
 import { EASTMONEY_SOURCE } from "./connectors/eastmoney.js";
 import { runHarness } from "./harness/run.js";
-import { appendJsonl, writeJsonFile } from "./utils/fs.js";
+import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuMarkdown } from "./feishu/feishu.js";
 import { createTradingAgent } from "./agent/trading-agent.js";
 import { methodologySummary } from "./methodology.js";
@@ -17,12 +17,20 @@ import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operat
 async function ingestSerenity() {
   const config = getConfig();
   const seeded = await seedSourceRegistry();
-  const posts = await fetchTopicDiggPostSummaries();
-  await writeJsonFile("data/serenity-posts.json", posts);
+  let warning: string | undefined;
+  let posts: Awaited<ReturnType<typeof fetchTopicDiggPostSummaries>>;
+  try {
+    posts = await fetchTopicDiggPostSummaries();
+    await writeJsonFile("data/serenity-posts.json", posts);
+  } catch (error) {
+    warning = `Serenity mirror fetch failed; using cached post summaries. Reason: ${error instanceof Error ? error.message : String(error)}`;
+    console.warn(warning);
+    posts = await readJsonFile<Awaited<ReturnType<typeof fetchTopicDiggPostSummaries>>>("data/serenity-posts.json", []);
+  }
   const reportSources = await ingestLocalReportSources(config.reportInbox);
   const merged = mergeSources(seeded, [...serenityPostsToSources(posts), ...reportSources, EASTMONEY_SOURCE]);
   await saveSourceRegistry(merged);
-  await appendJsonl("runs/ingest.jsonl", { type: "ingest-serenity", at: new Date().toISOString(), sources: merged.length, posts: posts.length });
+  await appendJsonl("runs/ingest.jsonl", { type: "ingest-serenity", at: new Date().toISOString(), sources: merged.length, posts: posts.length, warning });
   console.log(`Registered ${merged.length} sources; captured ${posts.length} accessible Serenity post summaries.`);
 }
 

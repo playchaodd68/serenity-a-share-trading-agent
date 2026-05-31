@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 function candidateMarkdown(candidate: Candidate, index: number): string {
   const stock = candidate.stock;
   const sourceIds = new Set(candidate.trace.components.flatMap((component) => component.sourceIds));
-  return `## ${index}. ${stock.code} ${stock.name}
+  return `## ${index + 1}. ${stock.code} ${stock.name}
 
 - Score: **${candidate.score.toFixed(1)}** / Confidence: **${candidate.confidence}**
 - Industry: ${stock.industry || "n/a"} / Concept: ${stock.concept || "n/a"}

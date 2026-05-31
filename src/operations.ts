@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getConfig, knowledgebasePath, type AppConfig } from "./config.js";
 import { findLatestRun } from "./report.js";
+import { mergeSources } from "./sources/registry.js";
+import { SEED_SOURCES } from "./sources/seed.js";
 import { readJsonFile } from "./utils/fs.js";
 import type { SourceRecord, SourceTier } from "./types.js";
 
@@ -34,7 +36,8 @@ function check(name: string, ok: boolean, severity: DoctorCheck["severity"], det
 export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<DoctorReport> {
   const kbRoot = knowledgebasePath(config);
   const sourceRegistryPath = path.resolve("data/source-registry.json");
-  const sources = await readJsonFile<SourceRecord[]>(sourceRegistryPath, []);
+  const persistedSources = await readJsonFile<SourceRecord[]>(sourceRegistryPath, []);
+  const sources = mergeSources(persistedSources, SEED_SOURCES);
   const tierCounts = sources.reduce<Record<SourceTier, number>>(
     (counts, source) => {
       counts[source.tier] += 1;
@@ -46,7 +49,7 @@ export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<
 
   const checks: DoctorCheck[] = [
     check("obsidian-kb", await pathExists(kbRoot), "error", kbRoot),
-    check("source-registry", sources.length > 0, "error", `${sourceRegistryPath} sources=${sources.length}`),
+    check("source-registry", sources.length > 0, "error", `${sourceRegistryPath} persisted=${persistedSources.length}, effective=${sources.length}`),
     check("primary-source-coverage", tierCounts.P0 > 0, "warning", `P0=${tierCounts.P0}, P1=${tierCounts.P1}, P2=${tierCounts.P2}`),
     check("report-inbox", await pathExists(config.reportInbox), "warning", config.reportInbox),
     check("latest-screen-report", latestRun != null, "warning", latestRun?.reportPath ?? "no screen report JSON found under reports/"),

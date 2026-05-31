@@ -76,6 +76,39 @@ function clamp(value: number, min = 0, max = 100): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function sourceHaystack(source: SourceRecord): string {
+  return [source.id, source.title, source.publisher, source.summary, ...source.evidenceTags].join(" ").toLowerCase();
+}
+
+function sourceMatchesCandidate(source: SourceRecord, stock: AShareStock, matchedThemes: Candidate["matchedThemes"]): boolean {
+  const haystack = sourceHaystack(source);
+  const terms = [
+    stock.code,
+    stock.name,
+    stock.industry,
+    stock.region,
+    ...stock.concept.split(/\s+/),
+    ...matchedThemes.flatMap((match) => [match.themeId, match.label, ...match.keywords]),
+  ]
+    .map((term) => term.trim().toLowerCase())
+    .filter((term) => term.length >= 2);
+  return terms.some((term) => haystack.includes(term));
+}
+
+export function relevantSourcesForCandidate(
+  stock: AShareStock,
+  sources: SourceRecord[],
+  matchedThemes = matchThemes(stock),
+): SourceRecord[] {
+  return sources.filter((source) => sourceMatchesCandidate(source, stock, matchedThemes));
+}
+
+function strongestTier(sources: SourceRecord[]): "P0" | "P1" | "P2" {
+  if (sources.some((source) => source.tier === "P0")) return "P0";
+  if (sources.some((source) => source.tier === "P1")) return "P1";
+  return "P2";
+}
+
 function sourceQualityScore(sources: SourceRecord[]): ScoreComponent {
   const tiers = new Set(sources.map((source) => source.tier));
   let score = 0;
@@ -86,7 +119,7 @@ function sourceQualityScore(sources: SourceRecord[]): ScoreComponent {
     name: "source-quality",
     score: clamp(score, 0, 15),
     maxScore: 15,
-    reason: `Source coverage tiers: ${[...tiers].sort().join(", ") || "none"}.`,
+    reason: `Candidate-relevant source tiers: ${[...tiers].sort().join(", ") || "none"}.`,
     sourceIds: sources.map((source) => source.id),
   };
 }
@@ -104,13 +137,14 @@ export function matchThemes(stock: AShareStock, themes = DEFAULT_THEMES): Candid
 
 export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], themes = DEFAULT_THEMES): Candidate {
   const matchedThemes = matchThemes(stock, themes);
+  const candidateSources = relevantSourcesForCandidate(stock, sources, matchedThemes);
   const themeScore = Math.min(35, matchedThemes.reduce((sum, match) => sum + 8 + match.keywords.length * 2, 0));
   const marketCapB = (stock.totalMarketCap ?? 0) / 1_000_000_000;
   const asymmetryScore = marketCapB > 0 && marketCapB <= 30 ? 15 : marketCapB <= 80 ? 10 : marketCapB <= 150 ? 5 : 0;
   const liquidityScore = stock.turnover == null ? 4 : stock.turnover >= 3 ? 10 : stock.turnover >= 1 ? 7 : 3;
   const valuationScore = stock.pe == null ? 4 : stock.pe > 0 && stock.pe < 80 ? 10 : stock.pe >= 80 && stock.pe < 160 ? 5 : 1;
   const flowScore = (stock.mainNetInflow ?? 0) > 0 ? 5 : 0;
-  const quality = sourceQualityScore(sources);
+  const quality = sourceQualityScore(candidateSources);
 
   const components: ScoreComponent[] = [
     {
@@ -161,18 +195,23 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
   const evidence: EvidenceItem[] = components.map((component, index) => ({
     id: `EV-${index + 1}`,
     title: component.name,
-    tier: component.name === "source-quality" ? "P1" : "P2",
+    tier: component.name === "source-quality" ? strongestTier(candidateSources) : "P2",
     polarity: component.score > 0 ? "positive" : "neutral",
     weight: component.score,
     description: component.reason,
     sourceIds: component.sourceIds,
     tags: [component.name],
   }));
+  const hasCandidateP0 = candidateSources.some((source) => source.tier === "P0");
+  const hasIndependentCorroboration = candidateSources.some((source) => source.tier === "P1" || source.tier === "P2");
   const coverageGaps = [
-    "候选级 P0 证据尚需补齐：交易所公告、公司年报/互动易/投资者关系材料。",
-    "卖方研报需由用户放入 report inbox 或配置授权数据源后纳入验证。",
+    ...(hasCandidateP0 ? [] : ["候选级 P0 证据尚需补齐：交易所公告、公司年报/互动易/投资者关系材料。"]),
+    ...(candidateSources.some((source) => source.sourceType === "broker_report")
+      ? []
+      : ["卖方研报需由用户放入 report inbox 或配置授权数据源后纳入验证。"]),
   ];
-  if (!sources.some((source) => source.tier === "P0")) coverageGaps.push("当前全局来源库缺少 P0 主来源，禁止标记为高置信度。");
+  if (!sources.some((source) => source.tier === "P0")) coverageGaps.push("当前全局来源库缺少 P0 主来源目录，禁止标记为高置信度。");
+  if (!hasCandidateP0) coverageGaps.push("全局主来源目录不能替代候选级 P0 证据；需补齐该公司/该环节的公告、年报或监管披露。");
 
   const risks = [
     "主题拥挤和短期波动可能显著影响价格。",
@@ -180,7 +219,7 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
   ];
   if (stock.pe != null && stock.pe < 0) risks.push("当前 PE 为负，盈利质量需要额外核验。");
 
-  const confidence = expectedValueScore >= 70 && sources.some((source) => source.tier === "P0") ? "high" : expectedValueScore >= 45 ? "medium" : "low";
+  const confidence = expectedValueScore >= 70 && hasCandidateP0 && hasIndependentCorroboration ? "high" : expectedValueScore >= 45 ? "medium" : "low";
   const trace: MethodologyTrace = {
     priorScore,
     posteriorScore,
