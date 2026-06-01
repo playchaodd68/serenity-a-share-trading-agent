@@ -58,6 +58,7 @@ export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<
     check("latest-screen-report", latestRun != null, "warning", latestRun?.reportPath ?? "no screen report JSON found under reports/"),
     check("feishu-webhook", Boolean(config.feishuWebhookUrl), "info", config.feishuWebhookUrl ? "configured" : "not configured"),
     check("feishu-callback-token", Boolean(config.feishuVerificationToken), "info", config.feishuVerificationToken ? "configured" : "not configured"),
+    check("feishu-app-credentials", Boolean(config.feishuAppId && config.feishuAppSecret), "info", config.feishuAppId && config.feishuAppSecret ? "configured" : "not configured"),
     check("model-config", Boolean(configuredModel), "error", `${config.modelProvider}/${config.modelName}`),
     check("model-api-key", Boolean(modelEnvKeys?.length), "warning", modelEnvKeys?.join(", ") ?? `no API key found for provider ${config.modelProvider}`),
   ];

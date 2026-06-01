@@ -3,6 +3,9 @@ dist/
 vendor/
 .env
 runs/*.jsonl
+runs/*.log
+runs/*.pid
+runs/feishu-callback-url.txt
 runs/chat-sessions/
 reports/*.json
 reports/*.md

@@ -9,6 +9,8 @@ export interface AppConfig {
   aShareTopN: number;
   feishuWebhookUrl?: string;
   feishuVerificationToken?: string;
+  feishuAppId?: string;
+  feishuAppSecret?: string;
   feishuPort: number;
   chatPort: number;
   modelProvider: string;
@@ -31,6 +33,8 @@ export function getConfig(): AppConfig {
     aShareTopN: numberEnv("A_SHARE_TOP_N", 15),
     feishuWebhookUrl: process.env.FEISHU_WEBHOOK_URL,
     feishuVerificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
+    feishuAppId: process.env.FEISHU_APP_ID,
+    feishuAppSecret: process.env.FEISHU_APP_SECRET,
     feishuPort: numberEnv("FEISHU_PORT", 8787),
     chatPort: numberEnv("CHAT_SERVER_PORT", 8788),
     modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "deepseek",

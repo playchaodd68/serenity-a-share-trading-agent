@@ -75,6 +75,8 @@ The browser UI is available at `http://localhost:8788/`. Session transcripts are
 
 Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_TOKEN` and expose `npm run feishu:server` for callback commands:
 
+- `/ask <question>` or any natural-language message: chat with the Pi/DeepSeek trading agent
+- `/reset`: clear the current Feishu chat session transcript
 - `/screen`
 - `/latest`
 - `/why <code>`
@@ -82,6 +84,17 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/methodology`
 - `/doctor`
 - `/harness`
+
+For a Feishu self-built app bot, configure:
+
+```text
+FEISHU_APP_ID=<app id>
+FEISHU_APP_SECRET=<app secret>
+FEISHU_VERIFICATION_TOKEN=<event subscription verification token>
+FEISHU_PORT=8787
+```
+
+Then run `npm run feishu:server` and expose `http://localhost:8787` through a public HTTPS tunnel. In Feishu developer console, enable the bot capability, subscribe to `im.message.receive_v1`, and set the event request URL to the tunnel URL. Leave event encryption disabled unless the server is extended with decrypt support.
 
 ## Operations
 

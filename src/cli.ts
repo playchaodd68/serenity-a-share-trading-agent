@@ -11,7 +11,7 @@ import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuMarkdown } from "./feishu/feishu.js";
 import { createTradingAgent } from "./agent/trading-agent.js";
-import { runInteractiveChat, startChatHttpServer } from "./chatbot/chatbot.js";
+import { createTradingChatSession, promptTradingChatSession, runInteractiveChat, saveChatSession, startChatHttpServer, type TradingChatSession } from "./chatbot/chatbot.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 
@@ -92,10 +92,79 @@ async function showAgent() {
 
 async function feishuServer() {
   const config = getConfig();
-  createFeishuServer({
+  const chatSessions = new Map<string, TradingChatSession>();
+
+  async function getChatSession(sessionId: string) {
+    const existing = chatSessions.get(sessionId);
+    if (existing) return existing;
+    const session = await createTradingChatSession(`feishu-${sessionId}`);
+    chatSessions.set(sessionId, session);
+    return session;
+  }
+
+  async function askAgent(sessionId: string, question: string) {
+    if (!question.trim()) return "Usage: /ask <question>";
+    const session = await getChatSession(sessionId);
+    const result = await promptTradingChatSession(session, question);
+    return result.errorMessage ? `Agent error: ${result.errorMessage}` : result.reply;
+  }
+
+  async function resetAgent(sessionId: string) {
+    const session = await getChatSession(sessionId);
+    session.agent.reset();
+    await saveChatSession(session);
+    return "Feishu agent session reset.";
+  }
+
+  async function runFeishuText(text: string, sessionId: string) {
+    const [command = "", ...rest] = text.trim().split(/\s+/);
+    const arg = rest.join(" ");
+    switch (command.toLowerCase()) {
+      case "/ask":
+      case "/chat":
+        return askAgent(sessionId, arg);
+      case "/reset":
+        return resetAgent(sessionId);
+      case "/screen":
+        await screen();
+        return "Screening completed. Check reports/ and Obsidian runs.";
+      case "/sources": {
+        const sources = await loadSourceRegistry();
+        return sources.slice(0, 20).map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n");
+      }
+      case "/latest": {
+        const run = await findLatestRun();
+        return run ? renderFeishuSummary(run) : "No screen report JSON found under reports/. Run /screen first.";
+      }
+      case "/harness": {
+        const result = await runHarness();
+        return result.checks.map((item) => `${item.ok ? "✓" : "✗"} ${item.name}`).join("\n");
+      }
+      case "/why": {
+        const run = await findLatestRun();
+        if (!run) return "No screen report JSON found under reports/. Run /screen first.";
+        if (!arg.trim()) return "Usage: /why <code-or-name>";
+        return explainCandidate(run, arg);
+      }
+      case "/methodology":
+        return methodologySummary();
+      case "/doctor":
+        return renderDoctorReport(await diagnoseRuntime());
+      default:
+        return askAgent(sessionId, text);
+    }
+  }
+
+  const server = createFeishuServer({
     port: config.feishuPort,
     token: config.feishuVerificationToken,
+    appId: config.feishuAppId,
+    appSecret: config.feishuAppSecret,
+    onMessage: (message) => runFeishuText(message.text, message.sessionId),
     commands: {
+      "/ask": (arg: string) => askAgent("legacy", arg),
+      "/chat": (arg: string) => askAgent("legacy", arg),
+      "/reset": () => resetAgent("legacy"),
       "/screen": async () => {
         await screen();
         return "Screening completed. Check reports/ and Obsidian runs.";
@@ -123,6 +192,10 @@ async function feishuServer() {
     },
   });
   console.log(`Feishu callback server listening on ${config.feishuPort}`);
+  if (!config.feishuAppId || !config.feishuAppSecret) {
+    console.log("FEISHU_APP_ID/FEISHU_APP_SECRET are not configured; URL verification can work, but Feishu message replies will fail until they are set.");
+  }
+  await new Promise<void>((resolve) => server.on("close", resolve));
 }
 
 async function main() {
@@ -156,7 +229,10 @@ async function main() {
       await runInteractiveChat();
       break;
     case "chat-server":
-      await startChatHttpServer();
+      {
+        const server = await startChatHttpServer();
+        await new Promise<void>((resolve) => server.on("close", resolve));
+      }
       break;
     case "agent":
       await showAgent();
