@@ -1,10 +1,15 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { TRADING_AGENT_SYSTEM_PROMPT } from "../agent/trading-agent.js";
 import { handleFeishuCallback } from "../feishu/feishu.js";
 import { initializeKnowledgebase } from "../rag/obsidian.js";
+import { renderScreenReport } from "../report.js";
+import { runAnswerSafetyEvals } from "../research/evals.js";
+import { updateWatchlistFromRun } from "../research/watchlist.js";
 import { screenCandidates } from "../screener.js";
 import { SEED_SOURCES } from "../sources/seed.js";
+import { methodologySummary } from "../methodology.js";
 import type { AShareStock } from "../types.js";
 
 const MOCK_STOCKS: AShareStock[] = [
@@ -67,11 +72,51 @@ export async function runHarness(): Promise<HarnessResult> {
   checks.push(check("screens relevant stocks", run.candidates.length === 2, `candidates=${run.candidates.length}`));
   checks.push(check("ranks optical/semiconductor above bank", run.candidates.every((candidate) => candidate.stock.code !== "600000"), "bank excluded"));
   checks.push(check("trace has coverage gaps", run.candidates[0]?.trace.coverageGaps.length > 0, "coverage gaps present"));
+  checks.push(check("structured evidence extracted", (run.candidates[0]?.trace.structuredEvidence?.length ?? 0) > 0, "evidence present"));
+  checks.push(check("supply-chain graph generated", (run.candidates[0]?.trace.graph?.edges.length ?? 0) > 0, "graph edges present"));
+  const watchlist = updateWatchlistFromRun(run);
+  checks.push(check("watchlist lifecycle updated", watchlist.length === run.candidates.length && watchlist.every((entry) => entry.nextReviewAt), `entries=${watchlist.length}`));
+  const screenReport = renderScreenReport(run);
+  checks.push(
+    check(
+      "research report includes industry logic and evidence sections",
+      screenReport.includes("Industry Logic & Trend") && screenReport.includes("Evidence Highlights") && screenReport.includes("Supply Chain Graph"),
+      "report sections present",
+    ),
+  );
+  const safetyEvals = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  checks.push(check("answer safety evals pass", safetyEvals.every((item) => item.passed), `${safetyEvals.filter((item) => item.passed).length}/${safetyEvals.length}`));
+  checks.push(
+    check(
+      "serenity-reply source registered",
+      SEED_SOURCES.some((source) => source.id === "SERENITY-REPLY-DISTILLATION-20260530" && source.tier === "P1" && source.sourceType === "repo"),
+      "distillation source is P1 repo input",
+    ),
+  );
+  checks.push(
+    check(
+      "methodology distillation boundaries present",
+      methodologySummary().includes("推理出处分层") && methodologySummary().includes("趋势优先产业排序框架") && methodologySummary().includes("不得以第一人称扮演 Serenity"),
+      "trend-first reasoning provenance and non-impersonation documented",
+    ),
+  );
+  checks.push(
+    check(
+      "agent prompt forbids impersonation",
+      TRADING_AGENT_SYSTEM_PROMPT.includes("do not impersonate Serenity") &&
+        TRADING_AGENT_SYSTEM_PROMPT.includes("lead with era-level industry trends") &&
+        TRADING_AGENT_SYSTEM_PROMPT.includes("never tell the user to paste an FFD API Key") &&
+        TRADING_AGENT_SYSTEM_PROMPT.includes("refuse leverage"),
+      "prompt keeps industry trend framework as the lead",
+    ),
+  );
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "serenity-kb-"));
   const kb = await initializeKnowledgebase(SEED_SOURCES.slice(0, 3), tempRoot);
-  checks.push(check("obsidian folders created", kb.directories.length >= 7, kb.root));
+  checks.push(check("obsidian folders created", kb.directories.length >= 12, kb.root));
   checks.push(check("methodology note written", kb.files.some((file) => file.includes("Serenity产业链瓶颈方法论")), "methodology file exists"));
+  checks.push(check("wiki governance note written", kb.files.some((file) => file.includes("Wiki维护与证据治理")), "governance file exists"));
+  checks.push(check("ffd signal and accepted folders created", kb.directories.some((dir) => dir.includes("reports/FFD/Accepted")) && kb.directories.some((dir) => dir.includes("signals/ffd")), "ffd wiki folders exist"));
 
   const rejected = await handleFeishuCallback({ token: "bad", text: "/sources" }, "expected", {});
   checks.push(check("feishu rejects invalid token", rejected.status === 401, `status=${rejected.status}`));

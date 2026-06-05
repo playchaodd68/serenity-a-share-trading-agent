@@ -6,6 +6,7 @@ import type { Agent, AgentEvent, AgentMessage } from "@earendil-works/pi-agent-c
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { createTradingAgent } from "../agent/trading-agent.js";
 import { getConfig } from "../config.js";
+import { toSimplifiedChinese } from "../utils/chinese.js";
 import { readJsonFile, safeFilename, writeJsonFile } from "../utils/fs.js";
 
 export const DEFAULT_CHAT_SESSION_ID = "default";
@@ -69,7 +70,15 @@ export function extractAssistantText(message: AgentMessage | undefined): string 
     .map((item) => item.text.trim())
     .filter(Boolean)
     .join("\n\n");
-  return text || message.errorMessage || "";
+  return toSimplifiedChinese(text || message.errorMessage || "");
+}
+
+function simplifyAssistantMessage(message: AgentMessage): void {
+  if (message.role !== "assistant") return;
+  for (const item of message.content) {
+    if (item.type === "text") item.text = toSimplifiedChinese(item.text);
+  }
+  if (message.errorMessage) message.errorMessage = toSimplifiedChinese(message.errorMessage);
 }
 
 function findLastAssistantMessage(messages: AgentMessage[]): AssistantMessage | undefined {
@@ -117,12 +126,13 @@ export async function promptTradingChatSession(
   const unsubscribe = session.agent.subscribe(async (event: AgentEvent) => {
     if (event.type === "message_update") {
       const inner = event.assistantMessageEvent;
-      if (inner.type === "text_delta") callbacks.onTextDelta?.(inner.delta);
+      if (inner.type === "text_delta") callbacks.onTextDelta?.(toSimplifiedChinese(inner.delta));
       if (inner.type === "thinking_delta") callbacks.onThinkingDelta?.(inner.delta);
       return;
     }
 
     if (event.type === "message_end" && event.message.role === "assistant") {
+      simplifyAssistantMessage(event.message);
       lastAssistant = event.message;
       return;
     }

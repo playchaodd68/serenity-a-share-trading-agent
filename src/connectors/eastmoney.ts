@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { AShareStock, SourceRecord } from "../types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { FALLBACK_A_SHARE_FIXTURE } from "./a-share-fixture.js";
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +29,14 @@ const EastmoneyResponse = z.object({
     total: z.number(),
     diff: z.array(EastmoneyRow),
   }),
+});
+
+const EastmoneyKlineResponse = z.object({
+  data: z
+    .object({
+      klines: z.array(z.string()),
+    })
+    .nullable(),
 });
 
 export const EASTMONEY_SOURCE: SourceRecord = {
@@ -79,8 +89,75 @@ export async function fetchAShareSnapshot(limit = 800): Promise<AShareStock[]> {
     return parsed.data.diff.map(mapEastmoneyStock);
   } catch (error) {
     if (process.env.A_SHARE_DISABLE_FIXTURE === "true") throw error;
-    console.warn(`Eastmoney live snapshot unavailable; using fallback fixture. Reason: ${error instanceof Error ? error.message : String(error)}`);
-    return FALLBACK_A_SHARE_FIXTURE.slice(0, limit);
+    console.warn(`Eastmoney live snapshot unavailable; using fallback fixture with kline refresh. Reason: ${error instanceof Error ? error.message : String(error)}`);
+    return refreshFallbackQuotes(FALLBACK_A_SHARE_FIXTURE.slice(0, limit));
+  }
+}
+
+function secidForCode(code: string): string {
+  return `${code.startsWith("6") ? "1" : "0"}.${code}`;
+}
+
+async function refreshFallbackQuotes(stocks: AShareStock[]): Promise<AShareStock[]> {
+  const refreshed = await Promise.all(stocks.map((stock) => refreshStockQuote(stock).catch(() => stock)));
+  return applyLocalResearchMetrics(refreshed);
+}
+
+async function refreshStockQuote(stock: AShareStock): Promise<AShareStock> {
+  const params = new URLSearchParams({
+    secid: secidForCode(stock.code),
+    fields1: "f1,f2,f3,f4,f5,f6",
+    fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+    klt: "101",
+    fqt: "1",
+    beg: "20260101",
+    end: "20500101",
+    lmt: "1",
+  });
+  const parsed = EastmoneyKlineResponse.parse(await fetchEastmoneyJson(`https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`));
+  const latest = parsed.data?.klines.at(-1);
+  if (!latest) return stock;
+  const [, , close, , , , , , pctChange, , turnover] = latest.split(",");
+  return {
+    ...stock,
+    latestPrice: Number.isFinite(Number(close)) ? Number(close) : stock.latestPrice,
+    pctChange: Number.isFinite(Number(pctChange)) ? Number(pctChange) : stock.pctChange,
+    turnover: Number.isFinite(Number(turnover)) ? Number(turnover) : stock.turnover,
+  };
+}
+
+async function applyLocalResearchMetrics(stocks: AShareStock[]): Promise<AShareStock[]> {
+  const metrics = await loadLatestLocalResearchMetrics();
+  if (metrics.size === 0) return stocks;
+  return stocks.map((stock) => {
+    const item = metrics.get(stock.code);
+    if (!item) return stock;
+    return {
+      ...stock,
+      latestPrice: stock.latestPrice ?? item.lastClose,
+    };
+  });
+}
+
+async function loadLatestLocalResearchMetrics(): Promise<Map<string, { lastClose: number }>> {
+  try {
+    const files = (await fs.readdir("reports"))
+      .filter((file) => /^serenity-research-data-.*\.json$/.test(file))
+      .sort()
+      .reverse();
+    for (const file of files) {
+      const raw = JSON.parse(await fs.readFile(path.join("reports", file), "utf8")) as {
+        candidates?: Array<{ code?: string; metrics?: { last_close?: number } }>;
+      };
+      const values = new Map<string, { lastClose: number }>();
+      for (const candidate of raw.candidates ?? []) {
+        if (candidate.code && Number.isFinite(candidate.metrics?.last_close)) values.set(candidate.code, { lastClose: Number(candidate.metrics?.last_close) });
+      }
+      if (values.size > 0) return values;
+    }
+    return new Map();
+  } catch {
+    return new Map();
   }
 }
 

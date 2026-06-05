@@ -3,10 +3,13 @@ import type {
   BottleneckTheme,
   Candidate,
   EvidenceItem,
+  IndustryLogicAssessment,
   MethodologyTrace,
   ScoreComponent,
   SourceRecord,
 } from "./types.js";
+import { extractCandidateEvidence, summarizeEvidence } from "./research/evidence.js";
+import { buildSupplyChainGraph } from "./research/graph.js";
 
 export const DEFAULT_THEMES: BottleneckTheme[] = [
   {
@@ -60,11 +63,51 @@ export const METHODOLOGY_NOTE = `# Serenity 产业链瓶颈方法论
 6. 负面证据同等重要：替代路线、客户自研、稀释、管理层失信、竞争扩产、拥挤交易都会降低后验。
 7. 动态轮动到后验最高处：资金和研究精力流向最活跃、最可验证、风险收益更好的瓶颈。
 
+## 蒸馏增强规则
+
+以下规则来自 SERENITY-REPLY-DISTILLATION-20260530 的外部方法论蒸馏，只作为研究框架输入，不作为任何候选公司的主证据：
+
+1. 瓶颈博弈优先于扩张叙事：评估关键环节时先问“如果该环节断供或良率不足，谁的产能、路线图或毛利会被卡住”，再看传统收入扩张指标。
+2. NVIDIA/头部客户信号是线索，不是结论：大额投资、架构路线、供应商绑定可以触发研究，但必须落到公司披露、订单、客户验证或独立产业证据。
+3. 信息不对称只在可验证时有价值：小市值、技术复杂、机构覆盖少是先验加分项；如果无法补齐 P0/P1 证据，只能保留为低/中置信线索。
+4. 地缘政治和供应安全要双向计价：国产替代、出口管制、稀土/关键材料本土化可能带来溢价，也可能带来制裁、客户切换和政策波动风险。
+5. 机构跟随只能作为后验更新：资金流、卖方覆盖和机构买入可验证 thesis 进入主流视野，但不能替代底层供应链证据。
+
+## 趋势优先产业排序框架
+
+以下规则来自用户提供的前半导体基金经理近期产业逻辑梳理，只作为方法论输入，不作为任何候选公司的主证据。系统必须以产业逻辑和趋势为核心主导，先排序产业链环节，再映射 A 股公司：
+
+1. 时代主线优先：先判断资本开支、利润、产能和估值会往哪个产业方向迁移，再讨论个股估值和交易热度。
+2. 拥挤度需要重定义：早期主线的资源集中、讨论集中和资金集中不等于泡沫；真正危险的是未来增量已经被充分定价，且缺少订单、价格、产能或客户验证的新证据。
+3. 下一层瓶颈优先：从整机/模块继续下钻到光芯片、InP、硅光、MPO/连接器、测试设备、PCB/铜箔/MLCC、设备材料等卡点，优先寻找断供、良率、认证、扩产周期和价格弹性。
+4. 预期差不是冷门：高关注方向仍可能有业绩超预期，冷门方向也可能没有催化。有效预期差必须落到 Q2/Q3/年度业绩、订单、客户导入、扩产和价格变化。
+5. 产业逻辑要量化：每条瓶颈线索都应尽量拆成“需求量 -> 供给量 -> 缺口 -> 价格 -> 单位利润 -> 公司弹性”，缺任一环节必须进入覆盖缺口。
+6. 区分产业正确和交易正确：产业趋势正确也可能因为兑现窗口过早、估值透支、供给快速释放或技术路线切换而阶段性不可投。
+
+## 推理出处分层
+
+输出中的判断必须能被读者区分出处强度：
+
+- 直接证据：来自公告、年报、监管披露、投资者关系、客户/供应商公开材料等可追溯来源。
+- 多源归纳：多个独立来源共同支持的稳定模式，例如产业链映射、客户验证、产能约束。
+- 框架外推：用 Serenity-derived 框架推导但尚无直接证据的判断，必须明确写成“框架推断，不是结论”。
+- 坦承无据：材料不支持时直接说明缺口，不用自信语气填补。
+
+## 反证与失效模式
+
+- 替代供应、客户自研、技术路线切换会削弱“不可替代”叙事。
+- 估值纪律是独立约束：瓶颈正确也可能因过高估值、流动性收缩或拥挤交易产生大幅回撤。
+- 幸存者偏差必须显式处理：不能只用成功案例校准方法论，要记录反转、失败和沉默样本。
+- KOL 履历、收益率、仓位和历史准确率若缺少独立验证，只能作为背景，不得进入候选置信度。
+- 宽列表和事后挑选赢家会高估命中率；报告应优先给出可证伪路径和风险触发条件。
+
 ## Agent 输出约束
 
 - 每个候选必须给出来源 ID、证据等级、风险和覆盖缺口。
 - 社交媒体只能作为线索，不得单独支持高置信度结论。
 - 高置信度必须有 P0 主来源和至少一个独立 P1/P2 交叉验证。
+- 对杠杆、借钱、梭哈、期权玩法、精确仓位比例等高风险请求，必须拒绝给具体执行建议，只能返回风险和研究框架。
+- 不得以第一人称扮演 Serenity；可以说“Serenity-derived framework / Serenity 方法论视角”。
 - 输出是研究候选，不是买卖建议。
 `;
 
@@ -82,6 +125,10 @@ function sourceHaystack(source: SourceRecord): string {
 
 function sourceMatchesCandidate(source: SourceRecord, stock: AShareStock, matchedThemes: Candidate["matchedThemes"]): boolean {
   const haystack = sourceHaystack(source);
+  const identityTerms = [stock.code, stock.name].map((term) => term.trim().toLowerCase()).filter((term) => term.length >= 2);
+  const directIdentityMatch = identityTerms.some((term) => haystack.includes(term));
+  const companySpecificSource = source.evidenceTags.includes("candidate-direct") || source.sourceType === "broker_report";
+  if (companySpecificSource && !source.evidenceTags.includes("sector-report")) return directIdentityMatch;
   const terms = [
     stock.code,
     stock.name,
@@ -93,6 +140,164 @@ function sourceMatchesCandidate(source: SourceRecord, stock: AShareStock, matche
     .map((term) => term.trim().toLowerCase())
     .filter((term) => term.length >= 2);
   return terms.some((term) => haystack.includes(term));
+}
+
+const PRIMARY_TREND_TERMS = [
+  "AI",
+  "AI算力",
+  "大模型",
+  "数据中心",
+  "CPO",
+  "光通信",
+  "光模块",
+  "光芯片",
+  "硅光",
+  "InP",
+  "800G",
+  "1.6T",
+  "OCS",
+  "MPO",
+  "先进封装",
+  "HBM",
+  "Chiplet",
+  "机器人",
+  "商业航天",
+  "低空经济",
+];
+
+const NEXT_LAYER_BOTTLENECK_TERMS = [
+  "瓶颈",
+  "卡脖子",
+  "光芯片",
+  "激光器",
+  "磷化铟",
+  "InP",
+  "硅光",
+  "硅光foundry",
+  "MPO",
+  "连接器",
+  "OCS",
+  "测试设备",
+  "铜箔",
+  "HVLP",
+  "mSAP",
+  "PCB",
+  "CCL",
+  "MLCC",
+  "载板",
+  "设备",
+  "材料",
+  "良率",
+  "认证",
+  "扩产难",
+];
+
+const SUPPLY_DEMAND_PROFIT_TERMS = [
+  "订单",
+  "客户",
+  "需求",
+  "供给",
+  "缺口",
+  "缺货",
+  "断供",
+  "产能",
+  "扩产",
+  "放量",
+  "涨价",
+  "价格",
+  "单价",
+  "毛利",
+  "净利",
+  "吨盈利",
+  "利润弹性",
+];
+
+const EXPECTATION_VALIDATION_TERMS = [
+  "预期差",
+  "超预期",
+  "低于预期",
+  "业绩",
+  "Q1",
+  "Q2",
+  "Q3",
+  "Q4",
+  "FY",
+  "验证",
+  "认证",
+  "导入",
+  "定点",
+  "催化",
+  "兑现",
+  "订单",
+  "放量",
+];
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function combinedResearchText(stock: AShareStock, sources: SourceRecord[], matchedThemes: Candidate["matchedThemes"]): string {
+  return [
+    stock.name,
+    stock.industry,
+    stock.concept,
+    stock.region,
+    ...matchedThemes.flatMap((theme) => [theme.label, ...theme.keywords]),
+    ...sources.map(sourceHaystack),
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function matchingTerms(text: string, terms: string[]): string[] {
+  return uniqueStrings(terms.filter((term) => text.includes(term.toLowerCase())));
+}
+
+function componentSources(sources: SourceRecord[]): string[] {
+  return uniqueStrings(["EASTMONEY-A-SHARE-SNAPSHOT", ...sources.map((source) => source.id)]).slice(0, 12);
+}
+
+export function assessIndustryLogic(
+  stock: AShareStock,
+  sources: SourceRecord[],
+  matchedThemes = matchThemes(stock),
+): IndustryLogicAssessment {
+  const text = combinedResearchText(stock, sources, matchedThemes);
+  const trendHits = matchingTerms(text, PRIMARY_TREND_TERMS);
+  const bottleneckHits = matchingTerms(text, NEXT_LAYER_BOTTLENECK_TERMS);
+  const supplyHits = matchingTerms(text, SUPPLY_DEMAND_PROFIT_TERMS);
+  const validationHits = matchingTerms(text, EXPECTATION_VALIDATION_TERMS);
+  const sourceValidationBoost = sources.some((source) => source.tier === "P0" || source.tier === "P1") ? 2 : 0;
+
+  const primaryTrendScore = clamp(matchedThemes.length * 8 + trendHits.length * 1.5, 0, 25);
+  const bottleneckDepthScore = clamp(bottleneckHits.length * 2 + (matchedThemes.length > 0 ? 2 : 0), 0, 20);
+  const supplyDemandProfitScore = clamp(supplyHits.length * 1.6 + sources.filter((source) => source.evidenceTags.includes("candidate-direct")).length * 1.5, 0, 15);
+  const expectationGapScore = clamp(validationHits.length * 1.4 + sourceValidationBoost, 0, 12);
+  const totalScore = clamp(primaryTrendScore + bottleneckDepthScore + supplyDemandProfitScore + expectationGapScore, 0, 72);
+  const keySignals = uniqueStrings([...trendHits, ...bottleneckHits, ...supplyHits, ...validationHits]).slice(0, 16);
+  const missingSignals = [
+    ...(primaryTrendScore >= 15 ? [] : ["时代主线强度不足：需要证明资本开支、利润或产能正在向该方向迁移。"]),
+    ...(bottleneckDepthScore >= 10 ? [] : ["下一层瓶颈未拆透：需要定位材料、设备、芯片、连接器、测试或良率等卡点。"]),
+    ...(supplyDemandProfitScore >= 8 ? [] : ["供需和利润弹性证据不足：缺需求量、供给量、价格、单位利润或公司弹性。"]),
+    ...(expectationGapScore >= 6 ? [] : ["预期差和验证窗口不足：缺订单、客户导入、Q2/Q3/年度业绩或价格验证。"]),
+  ];
+  const thesisTheme = matchedThemes.map((theme) => theme.label).join(" / ") || "未匹配明确主线";
+  const bottleneckSummary = bottleneckHits.slice(0, 5).join(" / ") || "下一层瓶颈待拆解";
+
+  return {
+    primaryTrendScore,
+    bottleneckDepthScore,
+    supplyDemandProfitScore,
+    expectationGapScore,
+    totalScore,
+    thesis: `${thesisTheme} -> ${bottleneckSummary}`,
+    validationWindow:
+      expectationGapScore >= 8
+        ? "已有订单、客户、业绩或价格线索，可进入近端验证。"
+        : "先补齐订单、价格、扩产、客户导入和 Q2/Q3/年度业绩证据，再上调置信度。",
+    keySignals,
+    missingSignals,
+  };
 }
 
 export function relevantSourcesForCandidate(
@@ -138,59 +343,64 @@ export function matchThemes(stock: AShareStock, themes = DEFAULT_THEMES): Candid
 export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], themes = DEFAULT_THEMES): Candidate {
   const matchedThemes = matchThemes(stock, themes);
   const candidateSources = relevantSourcesForCandidate(stock, sources, matchedThemes);
-  const themeScore = Math.min(35, matchedThemes.reduce((sum, match) => sum + 8 + match.keywords.length * 2, 0));
-  const marketCapB = (stock.totalMarketCap ?? 0) / 1_000_000_000;
-  const asymmetryScore = marketCapB > 0 && marketCapB <= 30 ? 15 : marketCapB <= 80 ? 10 : marketCapB <= 150 ? 5 : 0;
-  const liquidityScore = stock.turnover == null ? 4 : stock.turnover >= 3 ? 10 : stock.turnover >= 1 ? 7 : 3;
-  const valuationScore = stock.pe == null ? 4 : stock.pe > 0 && stock.pe < 80 ? 10 : stock.pe >= 80 && stock.pe < 160 ? 5 : 1;
-  const flowScore = (stock.mainNetInflow ?? 0) > 0 ? 5 : 0;
+  const industryLogic = assessIndustryLogic(stock, candidateSources, matchedThemes);
+  const valuationScore = stock.pe == null ? 4 : stock.pe > 0 && stock.pe < 80 ? 8 : stock.pe >= 80 && stock.pe < 160 ? 4 : 1;
+  const marketConfirmationScore = (stock.turnover == null ? 1 : stock.turnover >= 3 ? 3 : stock.turnover >= 1 ? 2 : 0) + ((stock.mainNetInflow ?? 0) > 0 ? 2 : 0);
   const quality = sourceQualityScore(candidateSources);
+  const industrySourceIds = componentSources(candidateSources);
 
   const components: ScoreComponent[] = [
     {
-      name: "theme-chokepoint-fit",
-      score: themeScore,
-      maxScore: 35,
+      name: "industry-trend-primacy",
+      score: industryLogic.primaryTrendScore,
+      maxScore: 25,
       reason:
         matchedThemes.length > 0
-          ? `Matched ${matchedThemes.map((match) => `${match.label}(${match.keywords.join("/")})`).join("; ")}.`
-          : "No configured bottleneck theme matched industry/concept/name.",
-      sourceIds: ["EASTMONEY-A-SHARE-SNAPSHOT"],
+          ? `Trend thesis: ${industryLogic.thesis}. Matched ${matchedThemes.map((match) => `${match.label}(${match.keywords.join("/")})`).join("; ")}.`
+          : "No configured era-level industry trend matched industry/concept/name.",
+      sourceIds: industrySourceIds,
     },
     {
-      name: "small-mid-cap-asymmetry",
-      score: asymmetryScore,
+      name: "bottleneck-cascade-depth",
+      score: industryLogic.bottleneckDepthScore,
+      maxScore: 20,
+      reason: `Next-layer bottleneck signals: ${industryLogic.keySignals.filter((term) => NEXT_LAYER_BOTTLENECK_TERMS.includes(term)).join(", ") || "not yet explicit"}.`,
+      sourceIds: industrySourceIds,
+    },
+    {
+      name: "supply-demand-profit-elasticity",
+      score: industryLogic.supplyDemandProfitScore,
       maxScore: 15,
-      reason: marketCapB > 0 ? `Total market cap approx ${marketCapB.toFixed(1)}B CNY.` : "Market cap unavailable.",
-      sourceIds: ["EASTMONEY-A-SHARE-SNAPSHOT"],
+      reason: "Scores demand, supply gap, price, unit profit and company elasticity signals before market factors.",
+      sourceIds: industrySourceIds,
     },
     {
-      name: "liquidity-turnover",
-      score: liquidityScore,
-      maxScore: 10,
-      reason: stock.turnover == null ? "Turnover unavailable." : `Turnover ${stock.turnover.toFixed(2)}%.`,
-      sourceIds: ["EASTMONEY-A-SHARE-SNAPSHOT"],
+      name: "expectation-gap-validation-window",
+      score: industryLogic.expectationGapScore,
+      maxScore: 12,
+      reason: industryLogic.validationWindow,
+      sourceIds: industrySourceIds,
     },
+    quality,
     {
-      name: "valuation-sanity",
+      name: "valuation-discipline",
       score: valuationScore,
-      maxScore: 10,
+      maxScore: 8,
       reason: stock.pe == null ? "PE unavailable." : `PE ${stock.pe.toFixed(2)}.`,
       sourceIds: ["EASTMONEY-A-SHARE-SNAPSHOT"],
     },
     {
-      name: "capital-flow-confirmation",
-      score: flowScore,
+      name: "market-confirmation",
+      score: marketConfirmationScore,
       maxScore: 5,
-      reason: (stock.mainNetInflow ?? 0) > 0 ? "Positive main net inflow in snapshot." : "No positive main net inflow confirmation.",
+      reason: `Turnover ${stock.turnover == null ? "n/a" : `${stock.turnover.toFixed(2)}%`}; main net inflow ${(stock.mainNetInflow ?? 0) > 0 ? "positive" : "not positive"}.`,
       sourceIds: ["EASTMONEY-A-SHARE-SNAPSHOT"],
     },
-    quality,
   ];
 
-  const priorScore = clamp(themeScore + asymmetryScore + valuationScore);
+  const priorScore = clamp(industryLogic.totalScore);
   const posteriorScore = clamp(components.reduce((sum, component) => sum + component.score, 0));
-  const riskPenalty = stock.pe != null && stock.pe < 0 ? 8 : 0;
+  const riskPenalty = (stock.pe != null && stock.pe < 0 ? 8 : 0) + (stock.pe != null && stock.pe >= 160 ? 4 : 0);
   const expectedValueScore = clamp(posteriorScore - riskPenalty);
   const evidence: EvidenceItem[] = components.map((component, index) => ({
     id: `EV-${index + 1}`,
@@ -202,42 +412,58 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     sourceIds: component.sourceIds,
     tags: [component.name],
   }));
-  const hasCandidateP0 = candidateSources.some((source) => source.tier === "P0");
-  const hasIndependentCorroboration = candidateSources.some((source) => source.tier === "P1" || source.tier === "P2");
-  const coverageGaps = [
-    ...(hasCandidateP0 ? [] : ["候选级 P0 证据尚需补齐：交易所公告、公司年报/互动易/投资者关系材料。"]),
-    ...(candidateSources.some((source) => source.sourceType === "broker_report")
-      ? []
-      : ["卖方研报需由用户放入 report inbox 或配置授权数据源后纳入验证。"]),
-  ];
-  if (!sources.some((source) => source.tier === "P0")) coverageGaps.push("当前全局来源库缺少 P0 主来源目录，禁止标记为高置信度。");
-  if (!hasCandidateP0) coverageGaps.push("全局主来源目录不能替代候选级 P0 证据；需补齐该公司/该环节的公告、年报或监管披露。");
-
   const risks = [
     "主题拥挤和短期波动可能显著影响价格。",
+    "产业趋势正确不等于交易正确；若订单、价格、扩产或业绩验证缺失，需降低兑现窗口判断。",
     "产业链映射可能存在客户 NDA、误读或验证周期延迟。",
   ];
   if (stock.pe != null && stock.pe < 0) risks.push("当前 PE 为负，盈利质量需要额外核验。");
 
-  const confidence = expectedValueScore >= 70 && hasCandidateP0 && hasIndependentCorroboration ? "high" : expectedValueScore >= 45 ? "medium" : "low";
   const trace: MethodologyTrace = {
     priorScore,
     posteriorScore,
     expectedValueScore,
+    industryLogic,
     components,
     evidence,
     risks,
-    coverageGaps,
+    coverageGaps: [],
   };
-
-  return {
+  const candidate: Candidate = {
     stock,
     matchedThemes,
     score: expectedValueScore,
-    confidence,
+    confidence: expectedValueScore >= 45 ? "medium" : "low",
     trace,
     generatedAt: new Date().toISOString(),
   };
+
+  const structuredEvidence = extractCandidateEvidence(candidate, sources);
+  const evidenceSummary = summarizeEvidence(structuredEvidence);
+  const graph = buildSupplyChainGraph(candidate, structuredEvidence);
+  const hasCandidateP0 = evidenceSummary.hasCandidateP0;
+  const hasIndependentCorroboration = structuredEvidence.some((source) => (source.tier === "P1" || source.tier === "P2") && (source.direct || source.kind === "market-signal"));
+  const coverageGaps = [
+    ...(hasCandidateP0 ? [] : ["候选级 P0 证据尚需补齐：交易所公告、公司年报/互动易/投资者关系材料。"]),
+    ...(structuredEvidence.some((item) => item.kind === "broker-report" && item.direct)
+      ? []
+      : ["卖方研报需由用户放入 report inbox 或配置授权数据源后纳入验证。"]),
+    ...industryLogic.missingSignals,
+  ];
+  if (!sources.some((source) => source.tier === "P0")) coverageGaps.push("当前全局来源库缺少 P0 主来源目录，禁止标记为高置信度。");
+  if (!hasCandidateP0) coverageGaps.push("全局主来源目录不能替代候选级 P0 证据；需补齐该公司/该环节的公告、年报或监管披露。");
+  for (const gap of graph.unresolvedLinks) coverageGaps.push(gap);
+
+  candidate.confidence = expectedValueScore >= 70 && hasCandidateP0 && hasIndependentCorroboration ? "high" : expectedValueScore >= 45 ? "medium" : "low";
+  candidate.trace = {
+    ...trace,
+    structuredEvidence,
+    graph,
+    nextActions: evidenceSummary.nextActions,
+    coverageGaps: [...new Set(coverageGaps)],
+  };
+
+  return candidate;
 }
 
 export function methodologySummary(): string {

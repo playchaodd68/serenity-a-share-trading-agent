@@ -1,8 +1,12 @@
 node_modules/
 dist/
 vendor/
+__pycache__/
+*.pyc
 .env
+.env.local
 runs/*.jsonl
+runs/*.json
 runs/*.log
 runs/*.pid
 runs/feishu-callback-url.txt
@@ -10,5 +14,13 @@ runs/chat-sessions/
 reports/*.json
 reports/*.md
 !reports/.gitkeep
+reports/ffd/raw/**
+reports/ffd/processed/**
+!reports/ffd/raw/.gitkeep
+!reports/ffd/processed/.gitkeep
 data/source-registry.json
 data/serenity-posts.json
+data/watchlist.json
+data/cninfo/
+data/evidence/
+data/graphs/

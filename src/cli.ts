@@ -1,19 +1,51 @@
+import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
 import { getConfig } from "./config.js";
+import { fetchCninfoAnnualReportSourcesForCandidates } from "./connectors/cninfo.js";
+import { callFfdTool, renderFfdToolResultWithStatus } from "./connectors/ffd.js";
 import { fetchTopicDiggPostSummaries, serenityPostsToSources } from "./connectors/serenity.js";
 import { ingestLocalReportSources } from "./connectors/reports.js";
 import { createFeishuServer } from "./feishu/feishu.js";
 import { explainCandidate, findLatestRun, renderFeishuSummary, writeScreenReport } from "./report.js";
-import { initializeKnowledgebase } from "./rag/obsidian.js";
+import { initializeKnowledgebase, syncKnowledgebaseSources } from "./rag/obsidian.js";
 import { screenCandidates } from "./screener.js";
 import { loadSourceRegistry, mergeSources, saveSourceRegistry, seedSourceRegistry } from "./sources/registry.js";
 import { EASTMONEY_SOURCE } from "./connectors/eastmoney.js";
 import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
-import { sendFeishuMarkdown } from "./feishu/feishu.js";
-import { createTradingAgent } from "./agent/trading-agent.js";
+import { sendFeishuChatText, sendFeishuMarkdown, sendFeishuOpenIdText, sendFeishuTextByReceiveId } from "./feishu/feishu.js";
+import { createTradingAgent, TRADING_AGENT_SYSTEM_PROMPT } from "./agent/trading-agent.js";
 import { createTradingChatSession, promptTradingChatSession, runInteractiveChat, saveChatSession, startChatHttpServer, type TradingChatSession } from "./chatbot/chatbot.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
+import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
+import { renderAnswerSafetyEvals, runAnswerSafetyEvals } from "./research/evals.js";
+import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
+import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
+import { organizeFfdObsidianKnowledgebase, renderFfdObsidianOrganizationRun } from "./research/ffd-obsidian-organizer.js";
+import { renderQuantBacktestReport, runQuantBacktest, type QuantBacktestOptions, type QuantBacktestSnapshot } from "./quant/backtest.js";
+import {
+  adaptScreenRunsToBacktestInput,
+  buildQuantBacktestInputFile,
+  loadHistoricalPriceBarsFromPath,
+  loadScreenRunsFromDirectory,
+  renderQuantHistoryAdapterReport,
+  type QuantHistoryAdapterOptions,
+} from "./quant/history-adapter.js";
+import {
+  acceptFfdReport,
+  enhanceFfdReports,
+  listFfdReportManifests,
+  processFfdReportLibrary,
+  qualityForManifest,
+  rejectFfdReport,
+  renderFfdReportReview,
+  type FfdReportLibraryRun,
+} from "./research/report-library.js";
+import { renderFfdAutoDownloadGuide } from "./research/ffd-auto-download.js";
+import { loadWatchlist, renderWatchlistSummary, saveWatchlist, updateWatchlistFromRun } from "./research/watchlist.js";
+import type { ScreenRun, WatchlistEntry } from "./types.js";
 
 async function ingestSerenity() {
   const config = getConfig();
@@ -42,23 +74,373 @@ async function initObsidian() {
   console.log(`Initialized Obsidian knowledgebase: ${result.root}`);
 }
 
-async function screen() {
+async function writeResearchArtifacts(run: ScreenRun, watchlist: WatchlistEntry[]) {
+  const evidencePath = path.resolve("data/evidence", `${run.runId}.json`);
+  const graphPath = path.resolve("data/graphs", `${run.runId}.json`);
+  await writeJsonFile(
+    evidencePath,
+    run.candidates.map((candidate) => ({
+      code: candidate.stock.code,
+      name: candidate.stock.name,
+      evidence: candidate.trace.structuredEvidence ?? [],
+      nextActions: candidate.trace.nextActions ?? [],
+    })),
+  );
+  await writeJsonFile(
+    graphPath,
+    run.candidates.map((candidate) => ({
+      code: candidate.stock.code,
+      name: candidate.stock.name,
+      graph: candidate.trace.graph,
+    })),
+  );
+  return { evidencePath, graphPath, watchlistPath: path.resolve("data/watchlist.json"), watchlistCount: watchlist.length };
+}
+
+async function notifyFeishu(title: string, content: string): Promise<boolean> {
   const config = getConfig();
-  const sources = mergeSources(await seedSourceRegistry(), [EASTMONEY_SOURCE]);
-  await saveSourceRegistry(sources);
-  const run = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN });
-  const completed = await writeScreenReport(run);
-  await appendJsonl("runs/screen.jsonl", { type: "screen", at: new Date().toISOString(), runId: completed.runId, candidates: completed.candidates.length });
-  console.log(`Wrote report: ${completed.reportPath}`);
   if (config.feishuWebhookUrl) {
-    await sendFeishuMarkdown(config.feishuWebhookUrl, "A股产业瓶颈筛选", renderFeishuSummary(completed));
+    await sendFeishuMarkdown(config.feishuWebhookUrl, title, content);
+    return true;
+  }
+  if (config.feishuAppId && config.feishuAppSecret && config.feishuNotifyOpenId) {
+    await sendFeishuOpenIdText({
+      appId: config.feishuAppId,
+      appSecret: config.feishuAppSecret,
+      openId: config.feishuNotifyOpenId,
+      text: `${title}\n\n${content}`,
+    });
+    return true;
+  }
+  if (config.feishuAppId && config.feishuAppSecret && config.feishuNotifyChatId) {
+    await sendFeishuChatText({
+      appId: config.feishuAppId,
+      appSecret: config.feishuAppSecret,
+      chatId: config.feishuNotifyChatId,
+      text: `${title}\n\n${content}`,
+    });
+    return true;
+  }
+  return false;
+}
+
+async function notifyFeishuReport(title: string, content: string): Promise<boolean> {
+  const config = getConfig();
+  const receiveId = config.feishuReportNotifyReceiveId ?? config.feishuReportNotifyOpenId;
+  const receiveIdType = config.feishuReportNotifyReceiveId ? config.feishuReportNotifyReceiveIdType : "open_id";
+  if (config.feishuReportAppId && config.feishuReportAppSecret && receiveId) {
+    await sendFeishuTextByReceiveId({
+      appId: config.feishuReportAppId,
+      appSecret: config.feishuReportAppSecret,
+      receiveId,
+      receiveIdType,
+      text: `${title}\n\n${content}`,
+    });
+    return true;
+  }
+  return false;
+}
+
+function renderFfdWebhookPayload(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return String(payload ?? "");
+  const data = payload as Record<string, any>;
+  if (data.msg_type === "text" && data.content?.text) return String(data.content.text);
+  if (data.msg_type === "interactive" && data.card) {
+    const header = data.card?.header?.title?.content;
+    const elements = Array.isArray(data.card?.elements)
+      ? data.card.elements
+          .map((element: any) => element?.content ?? element?.text?.content ?? element?.fields?.map((field: any) => field?.text?.content).join("\n"))
+          .filter(Boolean)
+      : [];
+    return [header, ...elements].filter(Boolean).join("\n\n");
+  }
+  if (data.msg_type === "post" && data.content?.post) {
+    const locale = data.content.post.zh_cn ?? data.content.post.en_us ?? Object.values(data.content.post)[0];
+    const title = locale?.title;
+    const lines = Array.isArray(locale?.content)
+      ? locale.content
+          .flat()
+          .map((part: any) => part?.text ?? part?.href ?? part?.user_name)
+          .filter(Boolean)
+      : [];
+    return [title, ...lines].filter(Boolean).join("\n");
+  }
+  return JSON.stringify(payload, null, 2).slice(0, 12000);
+}
+
+async function runFfdHealth(): Promise<string> {
+  const result = await callFfdTool("ffd_health", {});
+  return renderFfdToolResultWithStatus(result);
+}
+
+async function runFfdNaturalQuery(query: string): Promise<string> {
+  if (!query.trim()) return "Usage: /ffd <query>";
+  const result = await callFfdTool("ffd_nl_query", { query, format: "markdown" });
+  return renderFfdToolResultWithStatus(result);
+}
+
+async function runFfdIndustrySignal(query: string): Promise<string> {
+  if (!query.trim()) return "Usage: /ffd-industry <industry-or-question>";
+  const result = await callFfdTool("ffd_industry_signal", { query, market: "stock", format: "markdown" });
+  return renderFfdToolResultWithStatus(result);
+}
+
+async function runFfdResearchSearch(query: string): Promise<string> {
+  if (!query.trim()) return "Usage: /ffd-research <keyword>";
+  const result = await callFfdTool("ffd_research_search", { q: query, format: "markdown" });
+  return renderFfdToolResultWithStatus(result);
+}
+
+async function runFfdNewsSearch(query: string): Promise<string> {
+  if (!query.trim()) return "Usage: /ffd-news <keyword>";
+  const result = await callFfdTool("ffd_news_search", { q: query, format: "markdown" });
+  return renderFfdToolResultWithStatus(result);
+}
+
+async function runFfdSmokeCommand(): Promise<string> {
+  const run = await runFfdSmoke();
+  await writeJsonFile("runs/ffd-smoke-latest.json", run);
+  await appendJsonl("runs/ffd-smoke.jsonl", { type: "ffd-smoke", at: run.generatedAt, ok: run.ok, statuses: run.results.map((item) => ({ id: item.id, status: item.status, ok: item.ok })) });
+  return renderFfdSmoke(run);
+}
+
+async function archiveFfdSignalCommand(input: string): Promise<string> {
+  const [modeRaw = "", ...rest] = input.trim().split(/\s+/);
+  const query = rest.join(" ").trim();
+  if (!modeRaw || !query) return `Usage: /ffd-signal <${FFD_SIGNAL_MODES.join("|")}> <query>`;
+  if (!FFD_SIGNAL_MODES.includes(modeRaw as FfdSignalMode)) return `Unsupported mode: ${modeRaw}. Use one of: ${FFD_SIGNAL_MODES.join(", ")}`;
+  const result = await archiveFfdSignal({ mode: modeRaw as FfdSignalMode, query });
+  await appendJsonl("runs/ffd-signal.jsonl", {
+    type: "ffd-signal",
+    at: result.generatedAt,
+    mode: result.mode,
+    toolName: result.toolName,
+    query: result.query,
+    status: result.status,
+    notePath: result.notePath,
+  });
+  return renderFfdSignalArchive(result);
+}
+
+async function setFfdApiKeyCommand(): Promise<string> {
+  const apiKey = process.env.FFD_API_KEY?.trim();
+  if (!apiKey) {
+    return "Usage: FFD_API_KEY='<new key>' npm run ffd:set-key\nThe key is read from the environment and is never printed.";
+  }
+  if (!/^ffd-[A-Za-z0-9_-]+$/.test(apiKey)) {
+    return "Refusing to write FFD_API_KEY because it does not look like an FFD API key.";
+  }
+  const configPath = path.join(os.homedir(), ".ffd", "mcp-config.json");
+  const existing = await readJsonFile<any>(configPath, {});
+  const ffdServer = existing?.mcpServers?.ffd ?? {
+    command: "python3",
+    args: [path.join(os.homedir(), ".ffd", "ffd_mcp_server.py")],
+    env: { FFD_API_BASE: "https://ffd.findesk.cn/api" },
+  };
+  const updated = {
+    ...existing,
+    mcpServers: {
+      ...(existing.mcpServers ?? {}),
+      ffd: {
+        ...ffdServer,
+        env: {
+          ...(ffdServer.env ?? {}),
+          FFD_API_BASE: ffdServer.env?.FFD_API_BASE ?? "https://ffd.findesk.cn/api",
+          FFD_API_KEY: apiKey,
+        },
+      },
+    },
+  };
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await writeJsonFile(configPath, updated);
+  return `Updated ${configPath} with a redacted FFD API key. Run npm run doctor to verify ffd-data-plane.`;
+}
+
+function renderFfdReportLibraryRun(run: FfdReportLibraryRun): string {
+  return [
+    "FFD report conversion completed.",
+    `Raw dir: ${run.rawDir}`,
+    `Processed dir: ${run.processedDir}`,
+    run.obsidianRoot ? `Obsidian root: ${run.obsidianRoot}` : undefined,
+    `Processed: ${run.processed.length}`,
+    `Skipped: ${run.skipped.length}`,
+    run.warnings.length > 0 ? `Warnings:\n${run.warnings.map((warning) => `- ${warning}`).join("\n")}` : undefined,
+    "",
+    renderFfdReportReview(run.processed.length > 0 ? run.processed : run.skipped, 8),
+  ]
+    .filter((line): line is string => line != null)
+    .join("\n");
+}
+
+function renderFfdReportEnhanceRun(run: FfdReportLibraryRun): string {
+  return [
+    "FFD report high-quality enhancement completed.",
+    `Raw dir: ${run.rawDir}`,
+    `Processed dir: ${run.processedDir}`,
+    run.obsidianRoot ? `Obsidian root: ${run.obsidianRoot}` : undefined,
+    `Enhanced: ${run.processed.length}`,
+    `Skipped: ${run.skipped.length}`,
+    run.warnings.length > 0 ? `Warnings:\n${run.warnings.map((warning) => `- ${warning}`).join("\n")}` : undefined,
+    "",
+    renderFfdReportReview(run.processed.length > 0 ? run.processed : run.skipped, 8),
+  ]
+    .filter((line): line is string => line != null)
+    .join("\n");
+}
+
+async function convertFfdReports(): Promise<string> {
+  const result = await processFfdReportLibrary();
+  await appendJsonl("runs/ffd-report-library.jsonl", {
+    type: "convert",
+    at: new Date().toISOString(),
+    rawDir: result.rawDir,
+    processedDir: result.processedDir,
+    processed: result.processed.length,
+    skipped: result.skipped.length,
+    warnings: result.warnings,
+  });
+  if (result.processed.length > 0) {
+    await notifyFeishuReport("FFD研报库新增研报", renderFfdReportReview(result.processed, 8));
+  }
+  return renderFfdReportLibraryRun(result);
+}
+
+async function reviewFfdReports(): Promise<string> {
+  return renderFfdReportReview(await listFfdReportManifests());
+}
+
+async function enhanceFfdReportsCommand(input: string): Promise<string> {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const includeAll = parts.includes("--all");
+  const includeFailed = parts.includes("--failed");
+  const reportIds = parts.filter((part) => !part.startsWith("--"));
+  const result = await enhanceFfdReports({ reportIds, includeAll, includeFailed });
+  await appendJsonl("runs/ffd-report-library.jsonl", {
+    type: "enhance",
+    at: new Date().toISOString(),
+    reportIds: result.processed.map((manifest) => manifest.id),
+    processed: result.processed.length,
+    warnings: result.warnings,
+  });
+  return renderFfdReportEnhanceRun(result);
+}
+
+async function acceptFfdReportCommand(input: string): Promise<string> {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const bypassQualityGate = parts.includes("--force");
+  const reportId = parts.find((part) => part !== "--force") ?? "";
+  if (!reportId) return "Usage: /reports-accept [--force] <report-id>";
+  const result = await acceptFfdReport(reportId, { bypassQualityGate });
+  const merged = mergeSources(await loadSourceRegistry(), [result.source]);
+  await saveSourceRegistry(merged);
+  await syncKnowledgebaseSources(merged);
+  await appendJsonl("runs/ffd-report-library.jsonl", {
+    type: "accept",
+    at: new Date().toISOString(),
+    reportId: result.manifest.id,
+    sourceId: result.source.id,
+    bypassQualityGate,
+  });
+  return [`Accepted ${result.manifest.id}`, `Source: ${result.source.id}`, `Quality gate: ${result.manifest.quality?.canAccept ? "pass" : "bypassed"}`, `Obsidian: ${result.manifest.obsidianAcceptedPath ?? "n/a"}`].join("\n");
+}
+
+async function acceptQualityFfdReportsCommand(): Promise<string> {
+  const targets = (await listFfdReportManifests()).filter((manifest) => manifest.status !== "accepted" && qualityForManifest(manifest).canAccept);
+  if (targets.length === 0) return "No quality-gate-passing staged FFD reports to accept.";
+
+  const accepted = [];
+  for (const manifest of targets) {
+    accepted.push(await acceptFfdReport(manifest.id));
+  }
+  const merged = mergeSources(await loadSourceRegistry(), accepted.map((item) => item.source));
+  await saveSourceRegistry(merged);
+  await syncKnowledgebaseSources(merged);
+  await appendJsonl("runs/ffd-report-library.jsonl", {
+    type: "accept-quality",
+    at: new Date().toISOString(),
+    reportIds: accepted.map((item) => item.manifest.id),
+    sourceIds: accepted.map((item) => item.source.id),
+  });
+
+  return [
+    `Accepted ${accepted.length} quality-gate-passing FFD reports.`,
+    ...accepted.map((item) => `- ${item.manifest.id} -> ${item.source.id}`),
+  ].join("\n");
+}
+
+async function organizeFfdObsidianCommand(): Promise<string> {
+  const result = await organizeFfdObsidianKnowledgebase();
+  await appendJsonl("runs/ffd-report-library.jsonl", {
+    type: "organize-obsidian",
+    at: new Date().toISOString(),
+    acceptedReports: result.acceptedReports,
+    updatedReportNotes: result.updatedReportNotes,
+    indexFiles: result.indexFiles,
+  });
+  return renderFfdObsidianOrganizationRun(result);
+}
+
+async function rejectFfdReportCommand(reportId: string): Promise<string> {
+  if (!reportId.trim()) return "Usage: /reports-reject <report-id>";
+  const manifest = await rejectFfdReport(reportId.trim());
+  await appendJsonl("runs/ffd-report-library.jsonl", {
+    type: "reject",
+    at: new Date().toISOString(),
+    reportId: manifest.id,
+  });
+  return `Rejected ${manifest.id}`;
+}
+
+function shouldRouteDirectlyToFfd(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/^\/\w+/.test(trimmed)) return false;
+  return /(最新价|现价|涨跌幅|成交量|成交额|实时快照|实时|现在|行情快照|当前价格|盘口|资金流向|北向资金|主力资金|分时|日内|分钟行情|技术指标|RSI|MACD|均线|支撑位|阻力位|行业景气|景气度|产业指标|公告|财务指标|估值分位|新闻快讯)/i.test(trimmed);
+}
+
+async function runScreenPipeline(sendNotification = true) {
+  const config = getConfig();
+  let sources = mergeSources(await seedSourceRegistry(), [EASTMONEY_SOURCE]);
+  await saveSourceRegistry(sources);
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN });
+  const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
+  if (cninfo.warnings.length > 0) {
+    for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
+  }
+  if (cninfo.sources.length > 0) {
+    sources = mergeSources(sources, cninfo.sources);
+    await saveSourceRegistry(sources);
+  }
+  const run = cninfo.sources.length > 0 ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN }) : preliminaryRun;
+  const completed = await writeScreenReport(run);
+  const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
+  await saveWatchlist(watchlist);
+  const artifacts = await writeResearchArtifacts(completed, watchlist);
+  await appendJsonl("runs/screen.jsonl", {
+    type: "screen",
+    at: new Date().toISOString(),
+    runId: completed.runId,
+    candidates: completed.candidates.length,
+    cninfoP0Sources: cninfo.sources.length,
+    cninfoWarnings: cninfo.warnings,
+    artifacts,
+  });
+  if (sendNotification && (await notifyFeishu("A股产业瓶颈筛选", renderFeishuSummary(completed)))) {
     console.log("Sent Feishu notification.");
   }
+  return { run: completed, watchlist, artifacts };
+}
+
+async function screen() {
+  const result = await runScreenPipeline(true);
+  console.log(`Wrote report: ${result.run.reportPath}`);
+  console.log(`Updated watchlist: ${result.artifacts.watchlistPath}`);
+  console.log(`Wrote evidence snapshot: ${result.artifacts.evidencePath}`);
+  console.log(`Wrote graph snapshot: ${result.artifacts.graphPath}`);
 }
 
 async function dailyRun() {
   await ingestSerenity();
-  await initObsidian();
   await screen();
   const doctorReport = await diagnoseRuntime();
   await appendJsonl("runs/doctor.jsonl", {
@@ -69,6 +451,35 @@ async function dailyRun() {
   });
   console.log(renderDoctorReport(doctorReport));
   if (!doctorReport.ok) process.exitCode = 1;
+}
+
+async function researchRefresh() {
+  await ingestSerenity();
+  const { run, watchlist, artifacts } = await runScreenPipeline(true);
+  const calibration = await buildCalibrationSnapshot();
+  await writeCalibrationSnapshot(calibration);
+  const evals = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  await writeJsonFile("runs/answer-safety-evals-latest.json", evals);
+  const doctorReport = await diagnoseRuntime();
+  await writeJsonFile(`runs/doctor-${run.runId}.json`, doctorReport);
+  await appendJsonl("runs/research-refresh.jsonl", {
+    type: "research-refresh",
+    at: new Date().toISOString(),
+    runId: run.runId,
+    candidates: run.candidates.length,
+    watchlist: watchlist.length,
+    artifacts,
+    calibration: { reportsAnalyzed: calibration.reportsAnalyzed, candidatesAnalyzed: calibration.candidatesAnalyzed },
+    evalsPassed: evals.filter((item) => item.passed).length,
+    evalsTotal: evals.length,
+    doctorOk: doctorReport.ok,
+  });
+  console.log(`Research refresh completed: ${run.runId}`);
+  console.log(`Watchlist entries: ${watchlist.length}`);
+  console.log(renderCalibrationSnapshot(calibration));
+  console.log(renderAnswerSafetyEvals(evals));
+  console.log(renderDoctorReport(doctorReport));
+  if (!doctorReport.ok || evals.some((item) => !item.passed)) process.exitCode = 1;
 }
 
 async function harness() {
@@ -90,6 +501,191 @@ async function showAgent() {
   console.log(JSON.stringify(metadata, null, 2));
 }
 
+async function showWatchlist() {
+  console.log(renderWatchlistSummary(await loadWatchlist()));
+}
+
+async function calibration() {
+  const snapshot = await buildCalibrationSnapshot();
+  await writeCalibrationSnapshot(snapshot);
+  console.log(renderCalibrationSnapshot(snapshot));
+}
+
+async function evals() {
+  const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  await writeJsonFile("runs/answer-safety-evals-latest.json", results);
+  console.log(renderAnswerSafetyEvals(results));
+  if (results.some((item) => !item.passed)) process.exitCode = 1;
+}
+
+function renderQuantBacktestInputHelp(inputPath: string): string {
+  return [
+    `Backtest input not found: ${inputPath}`,
+    "",
+    "Create a JSON file with this shape, then run:",
+    `npm run quant:backtest -- ${inputPath}`,
+    "",
+    JSON.stringify(
+      {
+        options: {
+          portfolioSize: 20,
+          maxIndustryWeight: 0.35,
+          transactionCostBps: 15,
+          slippageBps: 10,
+          periodsPerYear: 52,
+        },
+        snapshots: [
+          {
+            date: "2026-01-02",
+            benchmarkReturn: 0.01,
+            candidates: [
+              {
+                code: "688001",
+                name: "示例公司",
+                industry: "AI算力",
+                score: 82,
+                bucket: "core",
+                evidenceGate: "pass",
+                forwardReturn: 0.035,
+                tradable: true,
+              },
+            ],
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  ].join("\n");
+}
+
+async function quantBacktestCommand(inputPath = "data/quant/backtest-input.json"): Promise<string> {
+  const payload = await readJsonFile<unknown | null>(inputPath, null);
+  if (payload == null) return renderQuantBacktestInputHelp(inputPath);
+  const snapshots = (Array.isArray(payload) ? payload : (payload as { snapshots?: unknown }).snapshots) as QuantBacktestSnapshot[] | undefined;
+  const options = (Array.isArray(payload) ? {} : ((payload as { options?: QuantBacktestOptions }).options ?? {})) as QuantBacktestOptions;
+  if (!Array.isArray(snapshots)) return "Invalid quant backtest input: expected an array of snapshots or an object with { snapshots, options }.";
+  const result = runQuantBacktest(snapshots, options);
+  await writeJsonFile("runs/quant-backtest-latest.json", result);
+  await appendJsonl("runs/quant-backtest.jsonl", {
+    type: "quant-backtest",
+    at: result.generatedAt,
+    inputPath,
+    periods: result.metrics.periods,
+    totalReturn: result.metrics.totalReturn,
+    benchmarkTotalReturn: result.metrics.benchmarkTotalReturn,
+    maxDrawdown: result.metrics.maxDrawdown,
+    avgTurnover: result.metrics.avgTurnover,
+  });
+  return `${renderQuantBacktestReport(result)}\n\nWrote runs/quant-backtest-latest.json`;
+}
+
+function parseFlagArgs(args: string[]): { flags: Record<string, string | boolean>; positional: string[] } {
+  const flags: Record<string, string | boolean> = {};
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) {
+      positional.push(arg);
+      continue;
+    }
+    const [rawKey, inlineValue] = arg.slice(2).split("=", 2);
+    const key = rawKey.trim();
+    if (!key) continue;
+    if (inlineValue != null) {
+      flags[key] = inlineValue;
+      continue;
+    }
+    const next = args[index + 1];
+    if (next && !next.startsWith("--")) {
+      flags[key] = next;
+      index += 1;
+    } else {
+      flags[key] = true;
+    }
+  }
+  return { flags, positional };
+}
+
+function flagString(flags: Record<string, string | boolean>, key: string): string | undefined {
+  const value = flags[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function flagNumber(flags: Record<string, string | boolean>, key: string): number | undefined {
+  const value = flagString(flags, key);
+  if (value == null) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function renderQuantAdaptHistoryHelp(): string {
+  return [
+    "Usage: npm run quant:adapt-history -- --prices <csv-or-json-file-or-dir> [options]",
+    "",
+    "Options:",
+    "--reports <dir>        Screen run directory, default reports",
+    "--benchmark <path>     Benchmark CSV/JSON path, optional",
+    "--benchmark-code <id>  Benchmark code when file contains multiple indices",
+    "--output <path>        Output path, default data/quant/backtest-input.json",
+    "--horizon <bars>       Holding-period bars, default 5",
+    "--entry-lag <bars>     Entry lag after signal date, default 1; use 0 for close-after-close datasets",
+    "--from <YYYY-MM-DD>    First signal date",
+    "--to <YYYY-MM-DD>      Last signal date",
+    "--max-candidates <n>   Max candidates per screen run, default 200",
+    "--run                 Run quant-backtest immediately after writing input",
+    "",
+    "Price columns accept English or Chinese headers: code/date/open/close/adj_close/pct_change/tradable/suspended/limit_up/limit_down.",
+  ].join("\n");
+}
+
+async function quantAdaptHistoryCommand(args: string[]): Promise<string> {
+  const { flags } = parseFlagArgs(args);
+  const pricePath = flagString(flags, "prices") ?? flagString(flags, "price");
+  if (!pricePath) return renderQuantAdaptHistoryHelp();
+
+  const reportDir = flagString(flags, "reports") ?? "reports";
+  const outputPath = flagString(flags, "output") ?? "data/quant/backtest-input.json";
+  const benchmarkPath = flagString(flags, "benchmark");
+  const adapterOptions: QuantHistoryAdapterOptions = {
+    horizonBars: flagNumber(flags, "horizon"),
+    entryLagBars: flagNumber(flags, "entry-lag"),
+    dateFrom: flagString(flags, "from"),
+    dateTo: flagString(flags, "to"),
+    maxCandidatesPerRun: flagNumber(flags, "max-candidates"),
+    benchmarkCode: flagString(flags, "benchmark-code"),
+  };
+
+  const [screenRuns, priceBars, benchmarkBars] = await Promise.all([
+    loadScreenRunsFromDirectory(reportDir),
+    loadHistoricalPriceBarsFromPath(pricePath),
+    benchmarkPath ? loadHistoricalPriceBarsFromPath(benchmarkPath) : Promise.resolve({ bars: [], files: [], warnings: [] }),
+  ]);
+  const adapted = adaptScreenRunsToBacktestInput(screenRuns.runs, priceBars.bars, adapterOptions, benchmarkBars.bars);
+  const backtestInput = buildQuantBacktestInputFile(adapted, {}, {
+    reports: screenRuns.files,
+    prices: priceBars.files,
+    benchmark: benchmarkBars.files,
+  });
+  backtestInput.adapter.warnings = [...screenRuns.warnings, ...priceBars.warnings, ...benchmarkBars.warnings, ...backtestInput.adapter.warnings];
+  await writeJsonFile(outputPath, backtestInput);
+  await appendJsonl("runs/quant-history-adapter.jsonl", {
+    type: "quant-history-adapter",
+    at: adapted.generatedAt,
+    outputPath,
+    coverage: adapted.coverage,
+    warnings: backtestInput.adapter.warnings.length,
+  });
+
+  if (flags.run === true) {
+    const result = runQuantBacktest(backtestInput.snapshots, backtestInput.options);
+    await writeJsonFile("runs/quant-backtest-latest.json", result);
+    return `${renderQuantHistoryAdapterReport({ ...adapted, warnings: backtestInput.adapter.warnings }, outputPath)}\n\n${renderQuantBacktestReport(result)}\n\nWrote runs/quant-backtest-latest.json`;
+  }
+
+  return renderQuantHistoryAdapterReport({ ...adapted, warnings: backtestInput.adapter.warnings }, outputPath);
+}
+
 async function feishuServer() {
   const config = getConfig();
   const chatSessions = new Map<string, TradingChatSession>();
@@ -104,8 +700,14 @@ async function feishuServer() {
 
   async function askAgent(sessionId: string, question: string) {
     if (!question.trim()) return "Usage: /ask <question>";
+    if (shouldRouteDirectlyToFfd(question)) return runFfdNaturalQuery(question);
     const session = await getChatSession(sessionId);
-    const result = await promptTradingChatSession(session, question);
+    const localizedQuestion = [
+      "请默认使用简体中文回答，除非我明确要求其他语言；不要使用繁体字。",
+      "",
+      question,
+    ].join("\n");
+    const result = await promptTradingChatSession(session, localizedQuestion);
     return result.errorMessage ? `Agent error: ${result.errorMessage}` : result.reply;
   }
 
@@ -127,7 +729,60 @@ async function feishuServer() {
         return resetAgent(sessionId);
       case "/screen":
         await screen();
-        return "Screening completed. Check reports/ and Obsidian runs.";
+        return "Screening completed. Check reports/ and runs/.";
+      case "/research-refresh":
+        await researchRefresh();
+        return "Research refresh completed. Check reports/, data/, and runs/.";
+      case "/ffd-health":
+        return runFfdHealth();
+      case "/ffd":
+        return runFfdNaturalQuery(arg);
+      case "/ffd-industry":
+        return runFfdIndustrySignal(arg);
+      case "/ffd-research":
+        return runFfdResearchSearch(arg);
+      case "/ffd-news":
+        return runFfdNewsSearch(arg);
+      case "/ffd-smoke":
+        return runFfdSmokeCommand();
+      case "/ffd-signal":
+        return archiveFfdSignalCommand(arg);
+      case "/ffd-auto-rules":
+        return renderFfdAutoDownloadGuide();
+      case "/reports-convert":
+        return convertFfdReports();
+      case "/reports-enhance":
+        return enhanceFfdReportsCommand(arg);
+      case "/reports-review":
+        return reviewFfdReports();
+      case "/reports-accept":
+        return acceptFfdReportCommand(arg);
+      case "/reports-accept-quality":
+        return acceptQualityFfdReportsCommand();
+      case "/reports-organize-obsidian":
+        return organizeFfdObsidianCommand();
+      case "/reports-reject":
+        return rejectFfdReportCommand(arg);
+      case "/archive-obsidian":
+      case "/obsidian-init":
+        await initObsidian();
+        return "Obsidian knowledgebase archived/refreshed by manual command.";
+      case "/watchlist":
+        return renderWatchlistSummary(await loadWatchlist());
+      case "/calibration": {
+        const snapshot = await buildCalibrationSnapshot();
+        await writeCalibrationSnapshot(snapshot);
+        return renderCalibrationSnapshot(snapshot);
+      }
+      case "/evals": {
+        const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
+        await writeJsonFile("runs/answer-safety-evals-latest.json", results);
+        return renderAnswerSafetyEvals(results);
+      }
+      case "/quant-adapt-history":
+        return quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []);
+      case "/quant-backtest":
+        return quantBacktestCommand(arg.trim() || undefined);
       case "/sources": {
         const sources = await loadSourceRegistry();
         return sources.slice(0, 20).map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n");
@@ -155,20 +810,76 @@ async function feishuServer() {
     }
   }
 
+  function shouldHandleFeishuMessage(message: { chatId?: string; chatType?: string; senderOpenId?: string; mentionedBot: boolean; text: string }) {
+    if (message.chatType !== "group") return true;
+    if (config.feishuCommandSenderOpenId && message.senderOpenId !== config.feishuCommandSenderOpenId) return false;
+    if (config.feishuNotifyChatId && message.chatId === config.feishuNotifyChatId) return true;
+    const explicitCommand = message.text.trim().startsWith("/");
+    return explicitCommand || message.mentionedBot;
+  }
+
   const server = createFeishuServer({
     port: config.feishuPort,
     token: config.feishuVerificationToken,
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
-    onMessage: (message) => runFeishuText(message.text, message.sessionId),
+    onMessage: (message) => (shouldHandleFeishuMessage(message) ? runFeishuText(message.text, message.sessionId) : undefined),
+    ffdReportRelay: config.ffdReportRelayToken
+      ? {
+          token: config.ffdReportRelayToken,
+          onPayload: async (payload) => {
+            await notifyFeishuReport("FFD研报库实时推送", renderFfdWebhookPayload(payload));
+          },
+        }
+      : undefined,
     commands: {
       "/ask": (arg: string) => askAgent("legacy", arg),
       "/chat": (arg: string) => askAgent("legacy", arg),
       "/reset": () => resetAgent("legacy"),
       "/screen": async () => {
         await screen();
-        return "Screening completed. Check reports/ and Obsidian runs.";
+        return "Screening completed. Check reports/ and runs/.";
       },
+      "/research-refresh": async () => {
+        await researchRefresh();
+        return "Research refresh completed. Check reports/, data/, and runs/.";
+      },
+      "/ffd-health": () => runFfdHealth(),
+      "/ffd": (arg: string) => runFfdNaturalQuery(arg),
+      "/ffd-industry": (arg: string) => runFfdIndustrySignal(arg),
+      "/ffd-research": (arg: string) => runFfdResearchSearch(arg),
+      "/ffd-news": (arg: string) => runFfdNewsSearch(arg),
+      "/ffd-smoke": () => runFfdSmokeCommand(),
+      "/ffd-signal": (arg: string) => archiveFfdSignalCommand(arg),
+      "/ffd-auto-rules": () => renderFfdAutoDownloadGuide(),
+      "/reports-convert": () => convertFfdReports(),
+      "/reports-enhance": (arg: string) => enhanceFfdReportsCommand(arg),
+      "/reports-review": () => reviewFfdReports(),
+      "/reports-accept": (arg: string) => acceptFfdReportCommand(arg),
+      "/reports-accept-quality": () => acceptQualityFfdReportsCommand(),
+      "/reports-organize-obsidian": () => organizeFfdObsidianCommand(),
+      "/reports-reject": (arg: string) => rejectFfdReportCommand(arg),
+      "/archive-obsidian": async () => {
+        await initObsidian();
+        return "Obsidian knowledgebase archived/refreshed by manual command.";
+      },
+      "/obsidian-init": async () => {
+        await initObsidian();
+        return "Obsidian knowledgebase archived/refreshed by manual command.";
+      },
+      "/watchlist": async () => renderWatchlistSummary(await loadWatchlist()),
+      "/calibration": async () => {
+        const snapshot = await buildCalibrationSnapshot();
+        await writeCalibrationSnapshot(snapshot);
+        return renderCalibrationSnapshot(snapshot);
+      },
+      "/evals": async () => {
+        const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
+        await writeJsonFile("runs/answer-safety-evals-latest.json", results);
+        return renderAnswerSafetyEvals(results);
+      },
+      "/quant-adapt-history": (arg: string) => quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []),
+      "/quant-backtest": (arg: string) => quantBacktestCommand(arg.trim() || undefined),
       "/sources": async () => {
         const sources = await loadSourceRegistry();
         return sources.slice(0, 20).map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n");
@@ -210,6 +921,48 @@ async function main() {
     case "screen":
       await screen();
       break;
+    case "research-refresh":
+      await researchRefresh();
+      break;
+    case "watchlist":
+      await showWatchlist();
+      break;
+    case "calibration":
+      await calibration();
+      break;
+    case "evals":
+      await evals();
+      break;
+    case "quant-adapt-history":
+      console.log(await quantAdaptHistoryCommand(process.argv.slice(3)));
+      break;
+    case "quant-backtest":
+      console.log(await quantBacktestCommand(process.argv[3]));
+      break;
+    case "reports-convert":
+      console.log(await convertFfdReports());
+      break;
+    case "reports-enhance":
+      console.log(await enhanceFfdReportsCommand(process.argv.slice(3).join(" ")));
+      break;
+    case "reports-review":
+      console.log(await reviewFfdReports());
+      break;
+    case "reports-accept":
+      console.log(await acceptFfdReportCommand(process.argv.slice(3).join(" ")));
+      break;
+    case "reports-accept-quality":
+      console.log(await acceptQualityFfdReportsCommand());
+      break;
+    case "reports-organize-obsidian":
+      console.log(await organizeFfdObsidianCommand());
+      break;
+    case "ffd-set-key":
+      console.log(await setFfdApiKeyCommand());
+      break;
+    case "reports-reject":
+      console.log(await rejectFfdReportCommand(process.argv[3] ?? ""));
+      break;
     case "daily-run":
       await dailyRun();
       break;
@@ -237,8 +990,17 @@ async function main() {
     case "agent":
       await showAgent();
       break;
+    case "ffd-auto-rules":
+      console.log(renderFfdAutoDownloadGuide());
+      break;
+    case "ffd-smoke":
+      console.log(await runFfdSmokeCommand());
+      break;
+    case "ffd-signal":
+      console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
+      break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
       process.exitCode = 1;
   }
 }

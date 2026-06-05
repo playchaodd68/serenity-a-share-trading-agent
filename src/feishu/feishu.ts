@@ -1,4 +1,5 @@
 import http from "node:http";
+import { toSimplifiedChinese } from "../utils/chinese.js";
 
 export interface FeishuCommandResult {
   status: number;
@@ -8,7 +9,21 @@ export interface FeishuCommandResult {
 export interface FeishuMessageEvent {
   messageId: string;
   sessionId: string;
+  chatId?: string;
+  chatType?: string;
+  senderOpenId?: string;
+  mentionedBot: boolean;
   text: string;
+}
+
+export interface FeishuWebhookRelayOptions {
+  token?: string;
+  onPayload: (payload: unknown) => Promise<void> | void;
+}
+
+export interface FeishuServerLogger {
+  info: (message: string) => void;
+  error: (message: string) => void;
 }
 
 interface FeishuTokenCache {
@@ -16,21 +31,115 @@ interface FeishuTokenCache {
   expiresAt: number;
 }
 
-let tenantTokenCache: FeishuTokenCache | undefined;
+const tenantTokenCacheByAppId = new Map<string, FeishuTokenCache>();
 
 export async function sendFeishuMarkdown(webhookUrl: string, title: string, content: string): Promise<void> {
+  const normalizedTitle = toSimplifiedChinese(title);
+  const normalizedContent = toSimplifiedChinese(content);
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       msg_type: "interactive",
       card: {
-        header: { title: { tag: "plain_text", content: title } },
-        elements: [{ tag: "markdown", content }],
+        header: { title: { tag: "plain_text", content: normalizedTitle } },
+        elements: [{ tag: "markdown", content: normalizedContent }],
       },
     }),
   });
   if (!response.ok) throw new Error(`Feishu webhook failed: ${response.status} ${await response.text()}`);
+}
+
+const FEISHU_TEXT_LIMIT = 3500;
+const FEISHU_CHUNK_PREFIX_RESERVE = 40;
+
+export function splitFeishuText(text: string, limit = FEISHU_TEXT_LIMIT): string[] {
+  if (!Number.isFinite(limit) || limit < 1) throw new Error("Feishu text chunk limit must be positive.");
+  if (text.length <= limit) return [text];
+
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    if (text.length - start <= limit) {
+      chunks.push(text.slice(start));
+      break;
+    }
+
+    const windowEnd = start + limit;
+    const minSoftCut = start + Math.floor(limit * 0.5);
+    let cut = text.lastIndexOf("\n\n", windowEnd);
+    if (cut <= minSoftCut) cut = text.lastIndexOf("\n", windowEnd);
+    if (cut <= minSoftCut) {
+      cut = windowEnd;
+    } else if (text.startsWith("\n\n", cut) && cut + 2 <= windowEnd) {
+      cut += 2;
+    } else if (text.startsWith("\n", cut) && cut + 1 <= windowEnd) {
+      cut += 1;
+    }
+
+    chunks.push(text.slice(start, cut));
+    start = cut;
+  }
+  return chunks;
+}
+
+export function formatFeishuTextChunks(text: string, limit = FEISHU_TEXT_LIMIT): string[] {
+  const chunkLimit = Math.max(1, limit - FEISHU_CHUNK_PREFIX_RESERVE);
+  const chunks = splitFeishuText(text, chunkLimit);
+  if (chunks.length <= 1) return chunks;
+  return chunks.map((chunk, index) => `[${index + 1}/${chunks.length}]\n${chunk}`);
+}
+
+type FeishuProactiveReceiveIdType = "chat_id" | "open_id" | "union_id" | "user_id" | "email";
+
+async function postFeishuText(token: string, receiveIdType: FeishuProactiveReceiveIdType, receiveId: string, text: string): Promise<void> {
+  const normalizedText = toSimplifiedChinese(text);
+  const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({
+      receive_id: receiveId,
+      msg_type: "text",
+      content: JSON.stringify({ text: normalizedText }),
+    }),
+  });
+  if (!response.ok) throw new Error(`Feishu send failed: ${response.status} ${await response.text()}`);
+  const body = (await response.json()) as { code?: number; msg?: string };
+  if (body.code !== 0) throw new Error(`Feishu send error: ${body.code} ${body.msg ?? ""}`.trim());
+}
+
+async function postFeishuChatText(token: string, chatId: string, text: string): Promise<void> {
+  await postFeishuText(token, "chat_id", chatId, text);
+}
+
+export async function sendFeishuChatText(options: { appId: string; appSecret: string; chatId: string; text: string }): Promise<void> {
+  const token = await getTenantAccessToken(options.appId, options.appSecret);
+  for (const chunk of formatFeishuTextChunks(toSimplifiedChinese(options.text))) {
+    await postFeishuChatText(token, options.chatId, chunk);
+  }
+}
+
+export async function sendFeishuOpenIdText(options: { appId: string; appSecret: string; openId: string; text: string }): Promise<void> {
+  const token = await getTenantAccessToken(options.appId, options.appSecret);
+  for (const chunk of formatFeishuTextChunks(toSimplifiedChinese(options.text))) {
+    await postFeishuText(token, "open_id", options.openId, chunk);
+  }
+}
+
+export async function sendFeishuTextByReceiveId(options: {
+  appId: string;
+  appSecret: string;
+  receiveIdType: Exclude<FeishuProactiveReceiveIdType, "chat_id">;
+  receiveId: string;
+  text: string;
+}): Promise<void> {
+  const token = await getTenantAccessToken(options.appId, options.appSecret);
+  for (const chunk of formatFeishuTextChunks(toSimplifiedChinese(options.text))) {
+    await postFeishuText(token, options.receiveIdType, options.receiveId, chunk);
+  }
 }
 
 export function extractFeishuText(payload: any): string {
@@ -41,23 +150,33 @@ export function extractFeishuMessageEvent(payload: any): FeishuMessageEvent | un
   if (payload?.header?.event_type !== "im.message.receive_v1") return undefined;
   const message = payload?.event?.message;
   const messageId = message?.message_id;
-  const sessionId = message?.chat_id ?? payload?.event?.sender?.sender_id?.open_id ?? messageId;
+  const chatId = message?.chat_id;
+  const senderOpenId = payload?.event?.sender?.sender_id?.open_id;
+  const sessionId = chatId ?? senderOpenId ?? messageId;
   if (!messageId || !sessionId) return undefined;
 
   let text = "";
+  let mentionedBot = false;
   try {
     const content = JSON.parse(message?.content ?? "{}");
     text = String(content?.text ?? "");
+    mentionedBot = /<at\b[^>]*>.*?<\/at>/i.test(text);
   } catch {
     text = "";
   }
   text = text.replace(/<at[^>]*>.*?<\/at>/g, "").replace(/^@\S+\s+/, "").trim();
   if (!text) return undefined;
-  return { messageId, sessionId, text };
+  return { messageId, sessionId, chatId, chatType: message?.chat_type, senderOpenId, mentionedBot, text };
 }
 
 function payloadToken(payload: any): string | undefined {
   return payload?.token ?? payload?.header?.token;
+}
+
+function redactLogText(text: string): string {
+  return text
+    .replace(/ffd-[A-Za-z0-9_-]+/g, "[REDACTED_FFD_KEY]")
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_API_KEY]");
 }
 
 export async function handleFeishuCallback(
@@ -73,15 +192,21 @@ export async function handleFeishuCallback(
   const [command = "", ...rest] = text.split(/\s+/);
   const handler = commands[command.toLowerCase()];
   if (!handler) {
-    return { status: 200, body: { text: "Supported commands: /ask <question>, /reset, /screen, /latest, /why <code>, /sources, /methodology, /doctor, /harness" } };
+    return {
+      status: 200,
+      body: {
+        text: "Supported commands: /ask <question>, /reset, /screen, /research-refresh, /ffd-health, /ffd <query>, /ffd-industry <query>, /ffd-research <keyword>, /ffd-news <keyword>, /ffd-smoke, /ffd-signal <mode> <query>, /ffd-auto-rules, /reports-convert, /reports-review, /reports-accept <id>, /reports-accept --force <id>, /reports-accept-quality, /reports-reject <id>, /archive-obsidian, /watchlist, /calibration, /evals, /latest, /why <code>, /sources, /methodology, /doctor, /harness",
+      },
+    };
   }
   const result = await handler(rest.join(" "));
-  return { status: 200, body: { text: result } };
+  return { status: 200, body: { text: toSimplifiedChinese(result) } };
 }
 
 async function getTenantAccessToken(appId: string, appSecret: string): Promise<string> {
   const now = Date.now();
-  if (tenantTokenCache && tenantTokenCache.expiresAt > now + 60_000) return tenantTokenCache.token;
+  const cached = tenantTokenCacheByAppId.get(appId);
+  if (cached && cached.expiresAt > now + 60_000) return cached.token;
   const response = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
     method: "POST",
     headers: { "content-type": "application/json; charset=utf-8" },
@@ -90,30 +215,17 @@ async function getTenantAccessToken(appId: string, appSecret: string): Promise<s
   if (!response.ok) throw new Error(`Feishu tenant token request failed: ${response.status} ${await response.text()}`);
   const body = (await response.json()) as { code?: number; msg?: string; tenant_access_token?: string; expire?: number };
   if (body.code !== 0 || !body.tenant_access_token) throw new Error(`Feishu tenant token error: ${body.code} ${body.msg ?? ""}`.trim());
-  tenantTokenCache = {
+  const cache = {
     token: body.tenant_access_token,
     expiresAt: now + Math.max(60, body.expire ?? 7200) * 1000,
   };
-  return tenantTokenCache.token;
+  tenantTokenCacheByAppId.set(appId, cache);
+  return cache.token;
 }
 
-function truncateFeishuText(text: string): string {
-  const limit = 3500;
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n\n[已截断：完整内容请查看本地 reports/ 或 Obsidian 知识库]`;
-}
-
-export async function replyFeishuText(options: {
-  appId?: string;
-  appSecret?: string;
-  messageId: string;
-  text: string;
-}): Promise<void> {
-  if (!options.appId || !options.appSecret) {
-    throw new Error("FEISHU_APP_ID and FEISHU_APP_SECRET are required to reply to Feishu messages.");
-  }
-  const token = await getTenantAccessToken(options.appId, options.appSecret);
-  const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(options.messageId)}/reply`, {
+async function postFeishuReplyText(token: string, messageId: string, text: string): Promise<void> {
+  const normalizedText = toSimplifiedChinese(text);
+  const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,
@@ -121,12 +233,33 @@ export async function replyFeishuText(options: {
     },
     body: JSON.stringify({
       msg_type: "text",
-      content: JSON.stringify({ text: truncateFeishuText(options.text) }),
+      content: JSON.stringify({ text: normalizedText }),
     }),
   });
   if (!response.ok) throw new Error(`Feishu reply failed: ${response.status} ${await response.text()}`);
   const body = (await response.json()) as { code?: number; msg?: string };
   if (body.code !== 0) throw new Error(`Feishu reply error: ${body.code} ${body.msg ?? ""}`.trim());
+}
+
+export async function replyFeishuText(options: {
+  appId?: string;
+  appSecret?: string;
+  messageId: string;
+  chatId?: string;
+  text: string;
+}): Promise<void> {
+  if (!options.appId || !options.appSecret) {
+    throw new Error("FEISHU_APP_ID and FEISHU_APP_SECRET are required to reply to Feishu messages.");
+  }
+  const token = await getTenantAccessToken(options.appId, options.appSecret);
+  const chunks = formatFeishuTextChunks(toSimplifiedChinese(options.text));
+  for (const [index, chunk] of chunks.entries()) {
+    if (index === 0 || !options.chatId) {
+      await postFeishuReplyText(token, options.messageId, chunk);
+    } else {
+      await postFeishuChatText(token, options.chatId, chunk);
+    }
+  }
 }
 
 export function createFeishuServer(options: {
@@ -135,8 +268,41 @@ export function createFeishuServer(options: {
   appId?: string;
   appSecret?: string;
   commands: Record<string, (arg: string) => Promise<string> | string>;
-  onMessage?: (message: FeishuMessageEvent) => Promise<string> | string;
+  onMessage?: (message: FeishuMessageEvent) => Promise<string | undefined> | string | undefined;
+  ffdReportRelay?: FeishuWebhookRelayOptions;
+  logger?: FeishuServerLogger;
 }): http.Server {
+  const logger = options.logger ?? console;
+  const messageQueues = new Map<string, Promise<void>>();
+
+  function enqueueMessage(message: FeishuMessageEvent): void {
+    const previous = messageQueues.get(message.sessionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const text = toSimplifiedChinese(await options.onMessage?.(message) ?? "");
+        if (!text) {
+          logger.info(`Feishu message ignored by handler: messageId=${message.messageId}`);
+          return;
+        }
+        logger.info(`Feishu reply started: messageId=${message.messageId} length=${text.length}`);
+        await replyFeishuText({
+          appId: options.appId,
+          appSecret: options.appSecret,
+          messageId: message.messageId,
+          chatId: message.chatId,
+          text,
+        });
+        logger.info(`Feishu reply sent: messageId=${message.messageId}`);
+      })
+      .catch((error) => logger.error(`Feishu message handling failed: ${error instanceof Error ? error.message : String(error)}`));
+
+    messageQueues.set(message.sessionId, next);
+    void next.finally(() => {
+      if (messageQueues.get(message.sessionId) === next) messageQueues.delete(message.sessionId);
+    });
+  }
+
   const server = http.createServer(async (request, response) => {
     if (request.method !== "POST") {
       response.writeHead(405).end("method not allowed");
@@ -146,24 +312,45 @@ export function createFeishuServer(options: {
     for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     try {
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      const relayPrefix = "/ffd-report-relay/";
+      if (path.startsWith(relayPrefix)) {
+        const suppliedToken = decodeURIComponent(path.slice(relayPrefix.length));
+        if (!options.ffdReportRelay?.token || suppliedToken !== options.ffdReportRelay.token) {
+          response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ code: 19001, msg: "invalid relay token", StatusCode: 19001, StatusMessage: "invalid relay token" }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ code: 0, msg: "success", StatusCode: 0, StatusMessage: "success" }));
+        void Promise.resolve(options.ffdReportRelay.onPayload(payload)).catch((error) =>
+          console.error(`FFD report relay failed: ${error instanceof Error ? error.message : String(error)}`),
+        );
+        return;
+      }
       if (options.token && payloadToken(payload) && payloadToken(payload) !== options.token) {
         response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({ error: "invalid token" }));
         return;
       }
       if (payload?.challenge) {
+        logger.info("Feishu URL verification challenge received.");
         response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({ challenge: payload.challenge }));
         return;
       }
       const message = extractFeishuMessageEvent(payload);
       if (message && options.onMessage) {
+        logger.info(
+          `Feishu message received: messageId=${message.messageId} sessionId=${message.sessionId} chatType=${message.chatType ?? "unknown"} mentionedBot=${message.mentionedBot} text="${redactLogText(message.text).slice(0, 120)}"`,
+        );
         response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({ ok: true }));
-        void Promise.resolve(options.onMessage(message))
-          .then((text) => replyFeishuText({ appId: options.appId, appSecret: options.appSecret, messageId: message.messageId, text }))
-          .catch((error) => console.error(`Feishu message handling failed: ${error instanceof Error ? error.message : String(error)}`));
+        enqueueMessage(message);
         return;
+      }
+      if (payload?.header?.event_type) {
+        logger.info(`Feishu event ignored: eventType=${String(payload.header.event_type)}`);
       }
       const result = await handleFeishuCallback(payload, options.token, options.commands);
       response.writeHead(result.status, { "content-type": "application/json; charset=utf-8" });

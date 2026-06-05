@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapEastmoneyStock } from "../src/connectors/eastmoney.js";
+import { fetchAShareSnapshot, mapEastmoneyStock } from "../src/connectors/eastmoney.js";
 
 describe("Eastmoney mapper", () => {
   it("maps endpoint fields into AShareStock", () => {
@@ -20,5 +20,15 @@ describe("Eastmoney mapper", () => {
     expect(stock.code).toBe("688001");
     expect(stock.industry).toBe("半导体");
     expect(stock.concept).toBe("CPO");
+  });
+
+  it("keeps deterministic fixture path available when live snapshot is disabled", async () => {
+    const previous = process.env.A_SHARE_DISABLE_FIXTURE;
+    process.env.A_SHARE_DISABLE_FIXTURE = "false";
+    const stocks = await fetchAShareSnapshot(1);
+    if (previous == null) delete process.env.A_SHARE_DISABLE_FIXTURE;
+    else process.env.A_SHARE_DISABLE_FIXTURE = previous;
+    expect(stocks).toHaveLength(1);
+    expect(stocks[0].code).toBeTruthy();
   });
 });

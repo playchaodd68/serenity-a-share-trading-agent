@@ -1,5 +1,6 @@
 import { fetchAShareSnapshot } from "./connectors/eastmoney.js";
 import { scoreCandidate } from "./methodology.js";
+import { applySerenityQuantOverlay } from "./quant/scoring.js";
 import type { Candidate, ScreenRun, SourceRecord } from "./types.js";
 
 export interface ScreenOptions {
@@ -13,15 +14,16 @@ export async function screenCandidates(sources: SourceRecord[], options: ScreenO
   const candidates: Candidate[] = stocks
     .map((stock) => scoreCandidate(stock, sources))
     .filter((candidate) => candidate.matchedThemes.length > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, options.topN);
+    .sort((a, b) => b.score - a.score);
 
   const generatedAt = new Date().toISOString();
+  const quant = applySerenityQuantOverlay(candidates, generatedAt);
   return {
     runId: `screen-${generatedAt.replace(/[:.]/g, "-")}`,
     generatedAt,
-    candidates,
+    candidates: quant.candidates.slice(0, options.topN),
     totalStocksScanned: stocks.length,
     sourceCount: sources.length,
+    quantSummary: quant.summary,
   };
 }

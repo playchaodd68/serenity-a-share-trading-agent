@@ -31,6 +31,7 @@ describe("report explanations", () => {
     const text = explainCandidate(run, "300308");
     expect(text).toContain("中际旭创");
     expect(text).toContain("Prior");
+    expect(text).toContain("Industry Logic & Trend");
     expect(text).toContain("Coverage Gaps");
   });
 });

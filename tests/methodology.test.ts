@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { relevantSourcesForCandidate, scoreCandidate } from "../src/methodology.js";
+import { assessIndustryLogic, methodologySummary, relevantSourcesForCandidate, scoreCandidate } from "../src/methodology.js";
 import { SEED_SOURCES } from "../src/sources/seed.js";
 import type { AShareStock, SourceRecord } from "../src/types.js";
 
@@ -76,8 +76,8 @@ describe("methodology scoring", () => {
       sourceType: "primary",
       publisher: "CNINFO",
       observedAt: "2026-06-01",
-      summary: "测试硅光披露 CPO、硅光、激光器客户验证与产能建设。",
-      evidenceTags: ["688999", "测试硅光", "CPO", "硅光"],
+      summary: "测试硅光披露 CPO、硅光、激光器客户验证与产能建设，订单、需求、供给缺口、价格、毛利、净利和 Q2 业绩兑现。",
+      evidenceTags: ["688999", "测试硅光", "CPO", "硅光", "candidate-direct"],
     };
     const p1: SourceRecord = {
       id: "P1-688999-BROKER",
@@ -86,12 +86,70 @@ describe("methodology scoring", () => {
       sourceType: "broker_report",
       publisher: "Licensed local report inbox",
       observedAt: "2026-06-01",
-      summary: "卖方研报交叉验证测试硅光 CPO 光模块和硅光激光器扩产。",
+      summary: "卖方研报交叉验证测试硅光 CPO 光模块和硅光激光器扩产，客户导入、认证、放量、单价和利润弹性形成超预期。",
       evidenceTags: ["688999", "CPO", "硅光", "broker-report"],
     };
 
     const candidate = scoreCandidate(stock, [...SEED_SOURCES, p0, p1]);
     expect(candidate.confidence).toBe("high");
     expect(candidate.trace.components.find((item) => item.name === "source-quality")?.sourceIds).toContain("P0-688999-ANNUAL");
+    expect(candidate.trace.industryLogic?.missingSignals).toEqual([]);
+  });
+
+  it("assesses industry logic before market confirmation", () => {
+    const stock: AShareStock = {
+      code: "688999",
+      name: "测试硅光",
+      latestPrice: 18,
+      pctChange: -2,
+      totalMarketCap: 200_000_000_000,
+      floatMarketCap: 120_000_000_000,
+      pe: 120,
+      turnover: 0.3,
+      mainNetInflow: -1_000_000,
+      industry: "光通信",
+      region: "测试",
+      concept: "AI算力 CPO 光模块 硅光 InP 光芯片 MPO 测试设备",
+    };
+
+    const logic = assessIndustryLogic(stock, []);
+    const candidate = scoreCandidate(stock, []);
+    expect(logic.primaryTrendScore).toBeGreaterThan(15);
+    expect(logic.bottleneckDepthScore).toBeGreaterThan(10);
+    expect(candidate.trace.components[0].name).toBe("industry-trend-primacy");
+    expect(candidate.trace.components.find((item) => item.name === "market-confirmation")?.maxScore).toBe(5);
+  });
+
+  it("documents distilled reasoning boundaries and limitations", () => {
+    const summary = methodologySummary();
+    expect(summary).toContain("SERENITY-REPLY-DISTILLATION-20260530");
+    expect(summary).toContain("推理出处分层");
+    expect(summary).toContain("框架推断，不是结论");
+    expect(summary).toContain("趋势优先产业排序框架");
+    expect(summary).toContain("需求量 -> 供给量 -> 缺口 -> 价格 -> 单位利润 -> 公司弹性");
+    expect(summary).toContain("估值纪律");
+    expect(summary).toContain("幸存者偏差");
+    expect(summary).toContain("不得以第一人称扮演 Serenity");
+  });
+
+  it("does not let distillation sources satisfy candidate primary evidence", () => {
+    const optical: AShareStock = {
+      code: "300308",
+      name: "中际旭创",
+      latestPrice: 120,
+      pctChange: 2.1,
+      totalMarketCap: 20_000_000_000,
+      floatMarketCap: 10_000_000_000,
+      pe: 35,
+      turnover: 4,
+      mainNetInflow: 1_000_000,
+      industry: "通信设备",
+      region: "山东板块",
+      concept: "CPO 光模块 硅光 激光器",
+    };
+    const relevantIds = relevantSourcesForCandidate(optical, SEED_SOURCES).map((source) => source.id);
+    expect(relevantIds).not.toContain("SERENITY-REPLY-DISTILLATION-20260530");
+    expect(relevantIds).not.toContain("SERENITY-REPLY-EVALS-20260530");
+    expect(scoreCandidate(optical, SEED_SOURCES).confidence).not.toBe("high");
   });
 });
