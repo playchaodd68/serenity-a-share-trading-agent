@@ -1,5 +1,9 @@
 import http from "node:http";
 import { toSimplifiedChinese } from "../utils/chinese.js";
+import { buildFeishuReply, type FeishuCard } from "./markdown-card.js";
+import { formatFeishuTextChunks } from "./text-utils.js";
+
+export { formatFeishuTextChunks, splitFeishuText } from "./text-utils.js";
 
 export interface FeishuCommandResult {
   status: number;
@@ -48,46 +52,6 @@ export async function sendFeishuMarkdown(webhookUrl: string, title: string, cont
     }),
   });
   if (!response.ok) throw new Error(`Feishu webhook failed: ${response.status} ${await response.text()}`);
-}
-
-const FEISHU_TEXT_LIMIT = 3500;
-const FEISHU_CHUNK_PREFIX_RESERVE = 40;
-
-export function splitFeishuText(text: string, limit = FEISHU_TEXT_LIMIT): string[] {
-  if (!Number.isFinite(limit) || limit < 1) throw new Error("Feishu text chunk limit must be positive.");
-  if (text.length <= limit) return [text];
-
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    if (text.length - start <= limit) {
-      chunks.push(text.slice(start));
-      break;
-    }
-
-    const windowEnd = start + limit;
-    const minSoftCut = start + Math.floor(limit * 0.5);
-    let cut = text.lastIndexOf("\n\n", windowEnd);
-    if (cut <= minSoftCut) cut = text.lastIndexOf("\n", windowEnd);
-    if (cut <= minSoftCut) {
-      cut = windowEnd;
-    } else if (text.startsWith("\n\n", cut) && cut + 2 <= windowEnd) {
-      cut += 2;
-    } else if (text.startsWith("\n", cut) && cut + 1 <= windowEnd) {
-      cut += 1;
-    }
-
-    chunks.push(text.slice(start, cut));
-    start = cut;
-  }
-  return chunks;
-}
-
-export function formatFeishuTextChunks(text: string, limit = FEISHU_TEXT_LIMIT): string[] {
-  const chunkLimit = Math.max(1, limit - FEISHU_CHUNK_PREFIX_RESERVE);
-  const chunks = splitFeishuText(text, chunkLimit);
-  if (chunks.length <= 1) return chunks;
-  return chunks.map((chunk, index) => `[${index + 1}/${chunks.length}]\n${chunk}`);
 }
 
 type FeishuProactiveReceiveIdType = "chat_id" | "open_id" | "union_id" | "user_id" | "email";
@@ -241,24 +205,73 @@ async function postFeishuReplyText(token: string, messageId: string, text: strin
   if (body.code !== 0) throw new Error(`Feishu reply error: ${body.code} ${body.msg ?? ""}`.trim());
 }
 
+async function postFeishuReplyCard(token: string, messageId: string, card: FeishuCard): Promise<void> {
+  const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ msg_type: "interactive", content: JSON.stringify(card) }),
+  });
+  if (!response.ok) throw new Error(`Feishu reply card failed: ${response.status} ${await response.text()}`);
+  const body = (await response.json()) as { code?: number; msg?: string };
+  if (body.code !== 0) throw new Error(`Feishu reply card error: ${body.code} ${body.msg ?? ""}`.trim());
+}
+
+async function postFeishuChatCard(token: string, chatId: string, card: FeishuCard): Promise<void> {
+  const response = await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: JSON.stringify(card) }),
+  });
+  if (!response.ok) throw new Error(`Feishu chat card failed: ${response.status} ${await response.text()}`);
+  const body = (await response.json()) as { code?: number; msg?: string };
+  if (body.code !== 0) throw new Error(`Feishu chat card error: ${body.code} ${body.msg ?? ""}`.trim());
+}
+
+/**
+ * Reply to a Feishu message. Renders the answer as an interactive card (so Markdown structure,
+ * lists, dividers, and colored evidence tiers display cleanly) and falls back to plain text if
+ * the card cannot be built or sent (e.g. oversized body or API rejection).
+ */
 export async function replyFeishuText(options: {
   appId?: string;
   appSecret?: string;
   messageId: string;
   chatId?: string;
   text: string;
+  title?: string;
 }): Promise<void> {
   if (!options.appId || !options.appSecret) {
     throw new Error("FEISHU_APP_ID and FEISHU_APP_SECRET are required to reply to Feishu messages.");
   }
   const token = await getTenantAccessToken(options.appId, options.appSecret);
-  const chunks = formatFeishuTextChunks(toSimplifiedChinese(options.text));
-  for (const [index, chunk] of chunks.entries()) {
-    if (index === 0 || !options.chatId) {
-      await postFeishuReplyText(token, options.messageId, chunk);
-    } else {
-      await postFeishuChatText(token, options.chatId, chunk);
+  const normalized = toSimplifiedChinese(options.text);
+  if (!normalized.trim()) return;
+
+  const { cards, textChunks } = buildFeishuReply(normalized, { title: options.title });
+  // Deliver each chunk as a card when possible; on a card build/size/send failure switch that chunk
+  // (and the rest) to plain text so content is never dropped or duplicated.
+  let cardMode = true;
+  for (const [index, textChunk] of textChunks.entries()) {
+    const chatId = index === 0 ? undefined : options.chatId;
+    const card = cards[index];
+    if (cardMode && card) {
+      try {
+        if (chatId) await postFeishuChatCard(token, chatId, card);
+        else await postFeishuReplyCard(token, options.messageId, card);
+        continue;
+      } catch {
+        cardMode = false;
+      }
     }
+    const payload = textChunks.length > 1 ? `[${index + 1}/${textChunks.length}]\n${textChunk}` : textChunk;
+    if (chatId) await postFeishuChatText(token, chatId, payload);
+    else await postFeishuReplyText(token, options.messageId, payload);
   }
 }
 

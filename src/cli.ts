@@ -17,6 +17,7 @@ import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuChatText, sendFeishuMarkdown, sendFeishuOpenIdText, sendFeishuTextByReceiveId } from "./feishu/feishu.js";
 import { createTradingAgent, TRADING_AGENT_SYSTEM_PROMPT } from "./agent/trading-agent.js";
 import { createTradingChatSession, promptTradingChatSession, runInteractiveChat, saveChatSession, startChatHttpServer, type TradingChatSession } from "./chatbot/chatbot.js";
+import { startDashboardServer } from "./dashboard/server.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
@@ -987,6 +988,12 @@ async function main() {
         await new Promise<void>((resolve) => server.on("close", resolve));
       }
       break;
+    case "dashboard":
+      {
+        const server = await startDashboardServer();
+        await new Promise<void>((resolve) => server.on("close", resolve));
+      }
+      break;
     case "agent":
       await showAgent();
       break;
@@ -1000,7 +1007,7 @@ async function main() {
       console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|dashboard|agent>");
       process.exitCode = 1;
   }
 }

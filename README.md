@@ -60,6 +60,7 @@ npm run review
 - `npm run agent`: print Pi agent model/tool metadata.
 - `npm run chat`: start a local terminal chatbot using the Pi agent runtime.
 - `npm run chat:server`: start a local HTTP chatbot at `http://localhost:8788`.
+- `npm run dashboard`: start the monitoring dashboard at `http://localhost:8790`.
 - `npm run review`: typecheck, unit tests, and deterministic harness.
 
 ## Local Chatbot
@@ -88,6 +89,28 @@ curl -X POST http://localhost:8788/chat \
 ```
 
 The browser UI is available at `http://localhost:8788/`. Session transcripts are persisted under `runs/chat-sessions/` so the same session can keep context across restarts.
+
+## Monitoring Dashboard
+
+A self-contained, auto-refreshing dashboard renders the live state of the agent from the data already written to disk (no extra services or build step).
+
+```bash
+npm run dashboard
+# open http://localhost:8790  (override with DASHBOARD_PORT)
+```
+
+It aggregates and visualizes, on a dark trading-terminal layout that polls every 10 seconds:
+
+- **Health rollup** — an overall ok/warn/error verdict derived from the runtime doctor, run freshness, watchlist state, and answer-safety evals, with the failing reasons listed.
+- **Runtime doctor** — every `diagnoseRuntime()` check, severity-sorted so failures float to the top (the same data as `npm run doctor`).
+- **Latest screen run** — top candidates with score/confidence/quant bucket, plus the quant risk-mode and bucket counts (from `reports/screen-*.json`).
+- **Watchlist** — status counts (validated / investigating / evidence-needed / downgraded / archived) and upcoming reviews (from `data/watchlist.json`).
+- **Calibration** — score distribution, candidate churn, and recurring coverage gaps (from `runs/calibration-latest.json`).
+- **Answer-safety evals** — promoted to a red strip only when a check fails (from `runs/answer-safety-evals-latest.json`).
+- **FFD data-plane smoke** — a per-probe status board (from `runs/ffd-smoke-latest.json`).
+- **Run history** — a timeline parsed from `runs/*.jsonl`.
+
+The endpoint `GET /api/status` returns the full `AgentStatusSnapshot` as JSON for scripting or external monitors. Missing files (a fresh checkout, gitignored `runs/`/`data/`) are handled gracefully — panels show an empty state instead of erroring. Run `npm run research:refresh` (or `screen` / `ffd:smoke` / `calibration`) to populate the underlying data.
 
 ## Feishu
 
@@ -120,6 +143,8 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/methodology`
 - `/doctor`
 - `/harness`
+
+Bot replies are rendered as **Feishu interactive cards** so the agent's Markdown displays cleanly: ATX headings become bold section titles (the leading `#` becomes the card header), GFM pipe tables are converted to aligned monospace code blocks (Feishu cards do not render Markdown tables), bullet/ordered lists and `---` dividers are preserved, `PASS`/`FAIL` are colored inline, and `P0`/`P1`/`P2` evidence tiers render as colored badges. Long answers are split into one card per ~3.2k characters (well under Feishu's 30 KB card limit). If a card cannot be built or is rejected by the API, the reply automatically falls back to the previous plain-text path, so no message is ever dropped.
 
 For a Feishu self-built app bot, configure:
 

@@ -36,7 +36,8 @@
     "feishu:poller": "node scripts/feishu-message-poller.mjs",
     "agent": "tsx src/cli.ts agent",
     "chat": "tsx src/cli.ts chat",
-    "chat:server": "tsx src/cli.ts chat-server"
+    "chat:server": "tsx src/cli.ts chat-server",
+    "dashboard": "tsx src/cli.ts dashboard"
   },
   "keywords": [
     "a-share",

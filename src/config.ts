@@ -31,6 +31,7 @@ export interface AppConfig {
   feishuReportNotifyOpenId?: string;
   feishuPort: number;
   chatPort: number;
+  dashboardPort: number;
   modelProvider: string;
   modelName: string;
 }
@@ -74,6 +75,7 @@ export function getConfig(): AppConfig {
     feishuReportNotifyOpenId: process.env.FEISHU_REPORT_NOTIFY_OPEN_ID ?? process.env.FEISHU_NOTIFY_OPEN_ID,
     feishuPort: numberEnv("FEISHU_PORT", 8787),
     chatPort: numberEnv("CHAT_SERVER_PORT", 8788),
+    dashboardPort: numberEnv("DASHBOARD_PORT", 8790),
     modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "deepseek",
     modelName: process.env.TRADING_AGENT_MODEL ?? "deepseek-v4-pro",
   };
