@@ -3,6 +3,8 @@ import { getModel, Type, type Model } from "@earendil-works/pi-ai";
 import { getConfig } from "../config.js";
 import { callFfdTool, renderFfdToolResultWithStatus, type FfdAllowedToolName } from "../connectors/ffd.js";
 import { methodologySummary } from "../methodology.js";
+import { SERENITY_DERIVED_CONCEPTS } from "../research/chokepoint-library.js";
+import { getConcept, resolveConceptToAShares } from "../research/chokepoint-mapping.js";
 import { screenCandidates } from "../screener.js";
 import { loadSourceRegistry } from "../sources/registry.js";
 
@@ -43,6 +45,13 @@ Use Serenity-style supply-chain chokepoint research:
 - do not impersonate Serenity or answer in first person as Serenity;
 - return candidates, risks, and source coverage gaps, never trading instructions;
 - refuse leverage, all-in, borrowing, options-play, or exact allocation guidance and redirect to research risks.
+
+Cross-market mapping (Serenity chokepoint -> A-share):
+- use map_serenity_chokepoint_to_ashare to project a distilled Serenity chokepoint concept (CPO 激光器, InP/磷化铟, HBM/先进封装, MPO 连接器, 800VDC/功率半导体) onto A-share segments and live constituents; this is FFD-data-driven and runs through the unchanged scoring path;
+- treat Serenity's US/HK per-ticker calls as a research line of inquiry (P2) only, never as A-share candidate P0 evidence; A-share confidence still requires candidate-level P0 plus an independent P1/P2 cross-check;
+- never quote a Serenity per-ticker buy/sell call as A-share justification, and never speak in first person as Serenity;
+- when mapStatus is no-equivalent or unverifiable, say plainly there is no clean A-share equivalent and return the line of inquiry instead of forcing a candidate;
+- surface 国产替代 premium and export-control discount as risk and coverage-gap context only; never let geopolitics inflate the industry-logic score or candidate confidence.
 `;
 
 function textResult(details: unknown, text: string) {
@@ -133,6 +142,46 @@ export function createTradingAgentTools(): AgentTool[] {
         { sources },
         sources.map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n"),
       );
+    },
+  };
+
+  const mapChokePointTool: AgentTool = {
+    name: "map_serenity_chokepoint_to_ashare",
+    label: "Map Serenity Chokepoint to A-share",
+    description:
+      "Project a distilled Serenity chokepoint concept (CPO 激光器, InP/磷化铟, HBM/先进封装, MPO 连接器, 800VDC/功率半导体) onto live A-share constituents via FFD, scored by the unchanged methodology. Serenity per-ticker calls are framework context only (P2 line of inquiry), never A-share candidate P0 evidence. Omit conceptId to list concepts. Returns mapStatus (including no-equivalent), geopolitics notes, line of inquiry, and evidence gaps.",
+    parameters: Type.Object({
+      conceptId: Type.Optional(Type.String()),
+      maxResults: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),
+    }),
+    async execute(_toolCallId, params) {
+      const args = params as { conceptId?: string; maxResults?: number };
+      if (!args.conceptId) {
+        const list = SERENITY_DERIVED_CONCEPTS.map(
+          (concept) => `${concept.id} | ${concept.nameZh} -> ${concept.matchedThemeIds.join(",")}`,
+        ).join("\n");
+        return textResult({ concepts: SERENITY_DERIVED_CONCEPTS }, list);
+      }
+      const concept = getConcept(args.conceptId);
+      if (!concept) {
+        const known = SERENITY_DERIVED_CONCEPTS.map((item) => item.id).join(", ");
+        return textResult({ error: "unknown concept", known }, `未找到概念：${args.conceptId}。可用：${known}`);
+      }
+      const sources = await loadSourceRegistry();
+      const resolution = await resolveConceptToAShares(concept, sources, args.maxResults ?? 20);
+      const lines = [
+        `## ${resolution.conceptNameZh}（mapStatus=${resolution.mapStatus}，方法=${resolution.resolutionMethod}）`,
+        ...resolution.provenance
+          .slice(0, 5)
+          .map(
+            (item) =>
+              `- ${item.candidateName}(${item.candidateCode}) 候选级P0:${item.candidateLevelP0.length ? "有" : "缺"} | 地缘:${item.geopoliticalPolarity} | ${item.confidenceAdjustment || "证据充分度可继续提升"}`,
+          ),
+        "研究方向:",
+        ...resolution.lineOfInquiry.map((item) => `  - ${item}`),
+        ...(resolution.resolutionGaps.length ? ["数据/映射缺口:", ...resolution.resolutionGaps.map((item) => `  - ${item}`)] : []),
+      ];
+      return textResult(resolution, lines.join("\n"));
     },
   };
 
@@ -461,6 +510,7 @@ export function createTradingAgentTools(): AgentTool[] {
     screenTool,
     methodologyTool,
     sourcesTool,
+    mapChokePointTool,
     ffdHealthTool,
     ffdCapabilitiesTool,
     ffdNlTool,

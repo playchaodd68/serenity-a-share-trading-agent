@@ -102,6 +102,37 @@ export async function runHarness(): Promise<HarnessResult> {
   );
   checks.push(
     check(
+      "serenity-aleabitoreddit thesis archive registered",
+      SEED_SOURCES.some(
+        (source) =>
+          source.id === "SERENITY-ALEABITOREDDIT-ARCHIVE-20260611" &&
+          source.tier === "P1" &&
+          source.sourceType === "repo" &&
+          source.evidenceTags.includes("line-of-inquiry"),
+      ),
+      "thesis archive is a P1 line-of-inquiry repo source",
+    ),
+  );
+  checks.push(
+    check(
+      "cross-market mapping framework present",
+      methodologySummary().includes("跨市场卡点映射框架") &&
+        methodologySummary().includes("line of inquiry") &&
+        methodologySummary().includes("domestic-substitution-play"),
+      "cross-market A-share mapping framework and evidence gate documented",
+    ),
+  );
+  checks.push(
+    check(
+      "agent prompt enforces cross-market boundary",
+      TRADING_AGENT_SYSTEM_PROMPT.includes("map_serenity_chokepoint_to_ashare") &&
+        TRADING_AGENT_SYSTEM_PROMPT.includes("never quote a Serenity per-ticker buy/sell call as A-share justification") &&
+        TRADING_AGENT_SYSTEM_PROMPT.includes("no clean A-share equivalent"),
+      "cross-market mapping tool and Serenity per-ticker boundary enforced",
+    ),
+  );
+  checks.push(
+    check(
       "agent prompt forbids impersonation",
       TRADING_AGENT_SYSTEM_PROMPT.includes("do not impersonate Serenity") &&
         TRADING_AGENT_SYSTEM_PROMPT.includes("lead with era-level industry trends") &&

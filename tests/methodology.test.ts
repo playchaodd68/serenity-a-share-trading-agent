@@ -152,4 +152,33 @@ describe("methodology scoring", () => {
     expect(relevantIds).not.toContain("SERENITY-REPLY-EVALS-20260530");
     expect(scoreCandidate(optical, SEED_SOURCES).confidence).not.toBe("high");
   });
+
+  it("excludes Serenity social/thesis sources from candidate-relevant clues even when keywords match", () => {
+    const optical: AShareStock = {
+      code: "300308",
+      name: "中际旭创",
+      latestPrice: 120,
+      pctChange: 2.1,
+      totalMarketCap: 20_000_000_000,
+      floatMarketCap: 10_000_000_000,
+      pe: 35,
+      turnover: 4,
+      mainNetInflow: 1_000_000,
+      industry: "通信设备",
+      region: "山东板块",
+      concept: "CPO 光模块 硅光 激光器",
+    };
+    const relevantIds = relevantSourcesForCandidate(optical, SEED_SOURCES).map((source) => source.id);
+    expect(relevantIds).not.toContain("SERENITY-X-ARTICLE-SIVE-20260519");
+    expect(relevantIds).not.toContain("SERENITY-ALEABITOREDDIT-ARCHIVE-20260611");
+    expect(relevantIds.every((id) => !/^SERENITY[-_]/i.test(id))).toBe(true);
+  });
+
+  it("documents the cross-market A-share mapping framework", () => {
+    const summary = methodologySummary();
+    expect(summary).toContain("跨市场卡点映射框架");
+    expect(summary).toContain("line of inquiry");
+    expect(summary).toContain("SERENITY-ALEABITOREDDIT-ARCHIVE-20260611");
+    expect(summary).toContain("domestic-substitution-play");
+  });
 });

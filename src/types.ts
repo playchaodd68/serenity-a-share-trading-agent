@@ -153,6 +153,7 @@ export interface BottleneckTheme {
   keywords: string[];
   positiveSignals: string[];
   negativeSignals: string[];
+  supportingConceptIds?: string[];
 }
 
 export interface Candidate {
@@ -278,4 +279,94 @@ export interface AnswerSafetyEvalResult {
   expectedPolicy: "refuse-execution-guidance";
   passed: boolean;
   detail: string;
+}
+
+// ---- Cross-market chokepoint mapping ----
+
+export type ChokePointMapStatus =
+  | "clean-equivalent" // an A-share constituent directly plays this chokepoint
+  | "partial-overlap" // A-share serves the segment with material differences
+  | "domestic-substitution-play" // 国产替代 angle; no direct global peer on A-share
+  | "no-equivalent" // structural gap: no viable A-share play
+  | "unverifiable"; // insufficient evidence to decide the mapping
+
+export type GeopoliticalPolarity =
+  | "guochanti-positive" // 国产替代 / supply-security premium
+  | "export-control-risk" // OFAC / EAR / dual-use / sanction exposure
+  | "neutral"
+  | "mixed";
+
+export type BottleneckMechanism =
+  | "supply-constrained"
+  | "capacity-gated"
+  | "yield-limited"
+  | "certification-slow"
+  | "customer-verified"
+  | "geopolitics";
+
+export type ChinaSubstituteStatus =
+  | "no-domestic-equivalent"
+  | "emerging-domestic"
+  | "established-domestic"
+  | "overcrowded-domestic";
+
+/**
+ * A distilled, ticker-INDEPENDENT chokepoint concept. Serenity per-ticker calls
+ * (e.g. SIVE) appear ONLY as globalExample / serenitySourceIds reference strings,
+ * never as candidate evidence. Keyed to existing DEFAULT_THEMES via matchedThemeIds.
+ */
+export interface ChokePointConcept {
+  id: string;
+  name: string;
+  nameZh: string;
+  description: string;
+  bottleneckMechanism: BottleneckMechanism;
+  matchedThemeIds: string[];
+  aShareIndustryKeywords: string[];
+  aShareConceptKeywords: string[];
+  globalExample?: string;
+  serenitySourceIds: string[];
+  chinaSubstituteStatus: ChinaSubstituteStatus;
+  geopoliticalPolarity: GeopoliticalPolarity;
+  observedAt: string;
+  expiresAt?: string;
+}
+
+/** A US/HK thesis projected onto an A-share segment as a research direction (P2). */
+export interface ChokePointInquiry {
+  conceptId: string;
+  lineOfInquiry: string[];
+  mapStatus: ChokePointMapStatus;
+}
+
+/**
+ * Provenance partition for a candidate surfaced via a chokepoint concept.
+ * Serenity material is isolated into serenityContext and can NEVER appear in candidateLevelP0.
+ */
+export interface ChokePointProvenance {
+  candidateCode: string;
+  candidateName: string;
+  conceptId: string;
+  globalExample?: string;
+  mapStatus: ChokePointMapStatus;
+  geopoliticalPolarity: GeopoliticalPolarity;
+  candidateLevelP0: SourceRecord[];
+  corroboratingAShareSources: SourceRecord[];
+  serenityContext: SourceRecord[];
+  geopoliticalNotes: string[];
+  confidenceAdjustment: string;
+}
+
+/** Result of resolving one concept to live A-share constituents via FFD + scoreCandidate. */
+export interface ChokePointResolution {
+  conceptId: string;
+  conceptNameZh: string;
+  resolutionMethod: "ffd_industry_stocks" | "ffd_screen_stocks" | "ffd_search_stocks" | "static-universe";
+  resolutionQuery: string;
+  mapStatus: ChokePointMapStatus;
+  lineOfInquiry: string[];
+  candidates: Candidate[];
+  provenance: ChokePointProvenance[];
+  resolutionGaps: string[];
+  resolutionTimestamp: string;
 }
