@@ -33,6 +33,7 @@ export interface AppConfig {
   chatPort: number;
   modelProvider: string;
   modelName: string;
+  anthropicOAuthCredentialsPath: string;
 }
 
 function numberEnv(name: string, fallback: number): number {
@@ -76,6 +77,7 @@ export function getConfig(): AppConfig {
     chatPort: numberEnv("CHAT_SERVER_PORT", 8788),
     modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "deepseek",
     modelName: process.env.TRADING_AGENT_MODEL ?? "deepseek-v4-pro",
+    anthropicOAuthCredentialsPath: process.env.ANTHROPIC_OAUTH_CREDENTIALS_PATH ?? "runs/anthropic-oauth.json",
   };
 }
 

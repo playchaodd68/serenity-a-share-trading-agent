@@ -1,5 +1,6 @@
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { getModel, Type, type Model } from "@earendil-works/pi-ai";
+import { getFreshAnthropicAccessToken } from "../auth/anthropic-oauth.js";
 import { getConfig } from "../config.js";
 import { callFfdTool, renderFfdToolResultWithStatus, type FfdAllowedToolName } from "../connectors/ffd.js";
 import { methodologySummary } from "../methodology.js";
@@ -567,6 +568,10 @@ export function createTradingAgent() {
       tools,
       thinkingLevel: "medium",
     },
+    // Resolve auth per request so an expiring Claude Pro/Max OAuth token is refreshed
+    // automatically. Returning undefined falls back to env keys (DEEPSEEK_API_KEY,
+    // ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY) handled by the provider.
+    getApiKey: async (provider) => (provider === "anthropic" ? getFreshAnthropicAccessToken() : undefined),
   });
   return {
     agent,

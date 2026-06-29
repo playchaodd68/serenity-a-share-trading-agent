@@ -35,6 +35,8 @@
     "feishu:event-relay": "node scripts/feishu-event-relay.mjs",
     "feishu:poller": "node scripts/feishu-message-poller.mjs",
     "agent": "tsx src/cli.ts agent",
+    "auth:anthropic": "tsx src/cli.ts auth-anthropic",
+    "auth:anthropic-status": "tsx src/cli.ts auth-anthropic-status",
     "chat": "tsx src/cli.ts chat",
     "chat:server": "tsx src/cli.ts chat-server"
   },
