@@ -1,4 +1,5 @@
 import type { Candidate, EvidencePolarity, EvidenceSummary, ResearchEvidence, ResearchEvidenceKind, SourceRecord } from "../types.js";
+import { isSerenityFrameworkSource } from "../sources/serenity-boundary.js";
 
 const POSITIVE_TERMS = ["客户", "订单", "验证", "产能", "扩产", "放量", "良率", "国产替代", "定点", "披露", "公告", "年报"];
 const RISK_TERMS = ["风险", "不及预期", "替代", "自研", "价格战", "制裁", "库存", "拥挤", "降价", "路线切换", "稀释"];
@@ -80,7 +81,11 @@ function evidenceId(candidate: Candidate, source: SourceRecord, index: number): 
 
 export function extractCandidateEvidence(candidate: Candidate, sources: SourceRecord[], now = new Date().toISOString()): ResearchEvidence[] {
   const terms = candidateTerms(candidate);
+  // Serenity-derived framework/social sources are research lines of inquiry only and
+  // must never become candidate-level evidence — keep them out of structuredEvidence,
+  // the supply-chain graph, and the hasIndependentCorroboration / hasCandidateP0 gate.
   return sources
+    .filter((source) => !isSerenityFrameworkSource(source))
     .map((source, index) => {
       const direct = sourceMentionsCandidateIdentity(source, candidate);
       const companySpecificSource = source.evidenceTags.includes("candidate-direct") || source.sourceType === "broker_report";

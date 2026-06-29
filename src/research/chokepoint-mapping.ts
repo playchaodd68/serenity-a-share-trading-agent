@@ -168,8 +168,9 @@ export async function resolveConceptToAShares(
   const { stocks, method } = await resolveConstituents(concept, gaps);
 
   // UNCHANGED, synchronous scoring path. Serenity sources are passed through but
-  // cannot become candidate P0 (boundary enforced inside relevantSourcesForCandidate
-  // and extractCandidateEvidence).
+  // cannot become candidate-level evidence: relevantSourcesForCandidate filters them
+  // from the scoring set, and extractCandidateEvidence filters them from
+  // structuredEvidence / the graph / the corroboration gate.
   const candidates = stocks
     .map((stock) => scoreCandidate(stock, sources))
     .filter((candidate) => candidate.matchedThemes.length > 0)

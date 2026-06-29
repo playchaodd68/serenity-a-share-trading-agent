@@ -174,6 +174,53 @@ describe("methodology scoring", () => {
     expect(relevantIds.every((id) => !/^SERENITY[-_]/i.test(id))).toBe(true);
   });
 
+  it("keeps Serenity sources out of structured evidence and the corroboration gate even when they name the company", () => {
+    const stock: AShareStock = {
+      code: "688777",
+      name: "测试光芯片二号",
+      latestPrice: 60,
+      pctChange: 2,
+      totalMarketCap: 20_000_000_000,
+      floatMarketCap: 12_000_000_000,
+      pe: 35,
+      turnover: 4,
+      mainNetInflow: 1_000_000,
+      industry: "光通信",
+      region: "测试",
+      concept: "AI算力 CPO 光模块 硅光 InP 光芯片 MPO 测试设备",
+    };
+    const p0: SourceRecord = {
+      id: "P0-688777-ANNUAL",
+      title: "688777 测试光芯片二号 2025 年报",
+      tier: "P0",
+      sourceType: "primary",
+      publisher: "CNINFO",
+      observedAt: "2026-06-01",
+      summary: "测试光芯片二号披露 CPO、硅光、光芯片客户验证与产能、订单、价格、毛利、净利及 Q2 业绩兑现。",
+      evidenceTags: ["688777", "测试光芯片二号", "CPO", "硅光", "光芯片", "candidate-direct"],
+    };
+    // A Serenity P1 that explicitly names the company — exactly the leak the reviewer reproduced.
+    const serenityNamingCompany: SourceRecord = {
+      id: "SERENITY-REPLY-688777-DIRECT",
+      title: "Serenity thesis names 688777 测试光芯片二号",
+      tier: "P1",
+      sourceType: "repo",
+      publisher: "GitHub / serenity-reply",
+      observedAt: "2026-06-01",
+      summary: "测试光芯片二号 688777 CPO 硅光 光芯片 客户 订单 验证 产能 放量，Serenity 论点直接点名该公司。",
+      evidenceTags: ["688777", "测试光芯片二号", "CPO", "硅光", "thesis-archive", "line-of-inquiry"],
+    };
+
+    const withoutSerenity = scoreCandidate(stock, [...SEED_SOURCES, p0]);
+    const withSerenity = scoreCandidate(stock, [...SEED_SOURCES, p0, serenityNamingCompany]);
+
+    const evidenceIds = (withSerenity.trace.structuredEvidence ?? []).map((item) => item.sourceId);
+    expect(evidenceIds.every((id) => !/^SERENITY[-_]/i.test(id))).toBe(true);
+    // A Serenity source must not be able to flip the confidence label by itself.
+    expect(withSerenity.confidence).toBe(withoutSerenity.confidence);
+    expect(withSerenity.confidence).not.toBe("high");
+  });
+
   it("documents the cross-market A-share mapping framework", () => {
     const summary = methodologySummary();
     expect(summary).toContain("跨市场卡点映射框架");
