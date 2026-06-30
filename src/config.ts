@@ -33,7 +33,25 @@ export interface AppConfig {
   chatPort: number;
   modelProvider: string;
   modelName: string;
+  thinkingLevel: ReasoningLevel;
   anthropicOAuthCredentialsPath: string;
+}
+
+/**
+ * Reasoning levels supported by the Pi agent runtime. For Claude Opus 4.8 the
+ * highest tier is "xhigh" (mapped to Anthropic effort "xhigh"); the legacy effort
+ * "max" is Opus-4.6-only and is not a valid level for 4.8.
+ */
+export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+const REASONING_LEVELS: ReasoningLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+function reasoningLevelEnv(name: string, fallback: ReasoningLevel): ReasoningLevel {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  // Treat "max" as an alias for the highest available tier (xhigh on current Opus).
+  if (raw === "max") return "xhigh";
+  return (REASONING_LEVELS as string[]).includes(raw) ? (raw as ReasoningLevel) : fallback;
 }
 
 function numberEnv(name: string, fallback: number): number {
@@ -75,8 +93,9 @@ export function getConfig(): AppConfig {
     feishuReportNotifyOpenId: process.env.FEISHU_REPORT_NOTIFY_OPEN_ID ?? process.env.FEISHU_NOTIFY_OPEN_ID,
     feishuPort: numberEnv("FEISHU_PORT", 8787),
     chatPort: numberEnv("CHAT_SERVER_PORT", 8788),
-    modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "deepseek",
-    modelName: process.env.TRADING_AGENT_MODEL ?? "deepseek-v4-pro",
+    modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "anthropic",
+    modelName: process.env.TRADING_AGENT_MODEL ?? "claude-opus-4-8",
+    thinkingLevel: reasoningLevelEnv("TRADING_AGENT_THINKING_LEVEL", "xhigh"),
     anthropicOAuthCredentialsPath: process.env.ANTHROPIC_OAUTH_CREDENTIALS_PATH ?? "runs/anthropic-oauth.json",
   };
 }

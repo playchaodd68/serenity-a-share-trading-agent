@@ -566,7 +566,7 @@ export function createTradingAgent() {
       systemPrompt: TRADING_AGENT_SYSTEM_PROMPT,
       model,
       tools,
-      thinkingLevel: "medium",
+      thinkingLevel: config.thinkingLevel,
     },
     // Resolve auth per request so an expiring Claude Pro/Max OAuth token is refreshed
     // automatically. Returning undefined falls back to env keys (DEEPSEEK_API_KEY,
@@ -578,6 +578,7 @@ export function createTradingAgent() {
     metadata: {
       modelProvider: config.modelProvider,
       modelName: config.modelName,
+      thinkingLevel: config.thinkingLevel,
       toolNames: tools.map((tool) => tool.name),
       base: "earendil-works/pi @earendil-works/pi-agent-core 0.78.0",
     },

@@ -31,6 +31,33 @@ describe("chatbot helpers", () => {
     expect(renderChatHelp()).toContain("/metadata");
   });
 
+  it("defaults to Claude Opus 4.8 with max (xhigh) reasoning", () => {
+    const keys = ["TRADING_AGENT_MODEL_PROVIDER", "TRADING_AGENT_MODEL", "TRADING_AGENT_THINKING_LEVEL"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+
+    try {
+      const { agent, metadata } = createTradingAgent();
+      expect(metadata.modelProvider).toBe("anthropic");
+      expect(metadata.modelName).toBe("claude-opus-4-8");
+      expect(metadata.thinkingLevel).toBe("xhigh");
+      expect(agent.state.model.id).toBe("claude-opus-4-8");
+      expect(agent.state.thinkingLevel).toBe("xhigh");
+
+      // "max" is accepted as an alias for the highest available tier (xhigh on Opus 4.8).
+      process.env.TRADING_AGENT_THINKING_LEVEL = "max";
+      expect(createTradingAgent().agent.state.thinkingLevel).toBe("xhigh");
+      // An unknown level falls back to the xhigh default.
+      process.env.TRADING_AGENT_THINKING_LEVEL = "bogus";
+      expect(createTradingAgent().agent.state.thinkingLevel).toBe("xhigh");
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+
   it("constructs the trading agent with DeepSeek V4 Pro", () => {
     const previousProvider = process.env.TRADING_AGENT_MODEL_PROVIDER;
     const previousModel = process.env.TRADING_AGENT_MODEL;

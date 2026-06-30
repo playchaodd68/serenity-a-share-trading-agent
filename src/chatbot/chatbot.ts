@@ -25,6 +25,7 @@ export interface TradingChatSession {
   metadata: {
     modelProvider: string;
     modelName: string;
+    thinkingLevel: string;
     toolNames: string[];
     base: string;
   };
