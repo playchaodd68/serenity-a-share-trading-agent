@@ -7,7 +7,7 @@ The trading agent currently calls DeepSeek via API key. The user wants to run Op
 - Add an Anthropic OAuth login flow (Claude Pro/Max) that persists credentials locally and never commits them.
 - Resolve the access token per request via the agent's `getApiKey` hook, refreshing the token with the stored refresh token when it expires.
 - Keep DeepSeek and API-key auth working unchanged (the hook returns undefined for non-Anthropic providers, falling back to env keys).
-- Add CLI commands (`auth-anthropic`, `auth-anthropic-status`) and npm scripts, plus `.env.example` documentation for switching to `anthropic` + `claude-opus-4-6`.
+- Add CLI commands (`auth-anthropic`, `auth-anthropic-status`) and npm scripts, plus `.env.example` documentation for switching to `anthropic` + `claude-opus-4-8`.
 
 ## Capabilities
 

@@ -506,7 +506,7 @@ async function authAnthropicCommand() {
   const config = getConfig();
   if (config.modelProvider !== "anthropic") {
     console.log(
-      `提示：当前 TRADING_AGENT_MODEL_PROVIDER=${config.modelProvider}。要用 Claude Pro/Max 订阅，请设置 TRADING_AGENT_MODEL_PROVIDER=anthropic 和 TRADING_AGENT_MODEL（如 claude-opus-4-6）。仍会继续登录。`,
+      `提示：当前 TRADING_AGENT_MODEL_PROVIDER=${config.modelProvider}。要用 Claude Pro/Max 订阅，请设置 TRADING_AGENT_MODEL_PROVIDER=anthropic 和 TRADING_AGENT_MODEL（如 claude-opus-4-8）。仍会继续登录。`,
     );
   }
   const { createInterface } = await import("node:readline/promises");

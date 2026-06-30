@@ -12,7 +12,7 @@
 
 ## Risks / Trade-offs
 - OAuth subscription tokens are scoped to the Claude Code identity; pi-ai handles the identity headers/prompt, so the agent's custom prompt is preserved as a secondary system block.
-- Model availability depends on the subscription plan; `claude-opus-4-6` is the newest Opus in this pinned pi-ai registry (Opus 4.8 would require upgrading the SDK).
+- Model availability depends on the subscription plan; the pinned `@earendil-works/pi-ai@0.78.0` registry already includes `claude-opus-4-8` (anthropic-messages, 1M context), so no SDK upgrade is needed to run Opus 4.8.
 - Token refresh requires network; failures surface as a clear refresh error at request time.
 
 ## Migration Plan
