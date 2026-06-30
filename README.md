@@ -16,7 +16,7 @@ This project emits research candidates and evidence traces. It does not place or
 - Source registry: `data/source-registry.json`
 - Feishu webhook/callback support
 - Hermes-style local chatbot: CLI REPL and HTTP API backed by Pi Agent state
-- Default live model: DeepSeek V4 Pro through Pi's `deepseek` provider
+- Default live model: Claude Opus 4.8 (`claude-opus-4-8`) at max reasoning (`xhigh`), via a Claude Pro/Max subscription (OAuth); DeepSeek V4 Pro remains available as an alternative provider
 - Deterministic harness and tests
 
 ## Setup
@@ -24,7 +24,9 @@ This project emits research candidates and evidence traces. It does not place or
 ```bash
 npm install
 cp .env.example .env
-# edit .env and set DEEPSEEK_API_KEY
+# Default model is Claude Opus 4.8 via a Claude Pro/Max subscription — log in once:
+npm run auth:anthropic
+# (or use DeepSeek instead: set the deepseek provider/model in .env and DEEPSEEK_API_KEY)
 npm run ingest:serenity
 npm run obsidian:init
 npm run screen
@@ -64,7 +66,17 @@ npm run review
 
 ## Local Chatbot
 
-The live agent defaults to:
+The live agent defaults to Claude Opus 4.8 at max reasoning via a Claude Pro/Max subscription:
+
+```text
+TRADING_AGENT_MODEL_PROVIDER=anthropic
+TRADING_AGENT_MODEL=claude-opus-4-8
+TRADING_AGENT_THINKING_LEVEL=xhigh   # max tier for Opus 4.8 ("max" is accepted as an alias)
+# one-time browser login (stores runs/anthropic-oauth.json, gitignored, auto-refreshed):
+#   npm run auth:anthropic
+```
+
+To use DeepSeek instead (pay-per-token API):
 
 ```text
 TRADING_AGENT_MODEL_PROVIDER=deepseek
@@ -93,7 +105,7 @@ The browser UI is available at `http://localhost:8788/`. Session transcripts are
 
 Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_TOKEN` and expose `npm run feishu:server` for callback commands:
 
-- `/ask <question>` or any natural-language message: chat with the Pi/DeepSeek trading agent
+- `/ask <question>` or any natural-language message: chat with the Pi trading agent (Claude Opus 4.8 by default)
 - `/reset`: clear the current Feishu chat session transcript
 - `/screen`
 - `/research-refresh`
