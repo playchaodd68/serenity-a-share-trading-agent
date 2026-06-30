@@ -10,6 +10,7 @@ import type {
 } from "./types.js";
 import { extractCandidateEvidence, summarizeEvidence } from "./research/evidence.js";
 import { buildSupplyChainGraph } from "./research/graph.js";
+import { isSerenityFrameworkSource } from "./sources/serenity-boundary.js";
 
 export const DEFAULT_THEMES: BottleneckTheme[] = [
   {
@@ -83,6 +84,17 @@ export const METHODOLOGY_NOTE = `# Serenity 产业链瓶颈方法论
 4. 预期差不是冷门：高关注方向仍可能有业绩超预期，冷门方向也可能没有催化。有效预期差必须落到 Q2/Q3/年度业绩、订单、客户导入、扩产和价格变化。
 5. 产业逻辑要量化：每条瓶颈线索都应尽量拆成“需求量 -> 供给量 -> 缺口 -> 价格 -> 单位利润 -> 公司弹性”，缺任一环节必须进入覆盖缺口。
 6. 区分产业正确和交易正确：产业趋势正确也可能因为兑现窗口过早、估值透支、供给快速释放或技术路线切换而阶段性不可投。
+
+## 跨市场卡点映射框架 (A 股映射)
+
+Serenity 交易的是美股/港股标的，本系统服务 A 股。来自 SERENITY-ALEABITOREDDIT-ARCHIVE-20260611 等论点存档的个股结论只能作为研究方向 (line of inquiry)，不是 A 股证据。映射按以下路径，且必须守住证据闸门：
+
+1. 概念优先，不搬个股：先把 Serenity 论点抽象成"卡点概念"（如 CPO 激光器、磷化铟 InP、HBM 先进封装、MPO 连接器、AI 电力 800VDC），剥离具体美股 ticker，再进入映射。
+2. 概念 -> 环节 -> A 股标的：用卡点概念关联本地主题 (DEFAULT_THEMES)，落到 A 股行业/概念关键词，再用 FFD 行业/概念成分股解析出活的 A 股候选；候选一律走未改动的同步打分逻辑。
+3. 证据闸门不变：US/HK 论点只产生 P2 研究方向；A 股置信度仍要求候选级 P0（公告/年报/互动易）+ 独立 P1/P2 交叉验证。Serenity 来源（SERENITY-* 或带 methodology-distillation/thesis-archive/line-of-inquiry 标签的）永远不计入候选级证据，也不写进任何正向打分项。
+4. 没有干净对应就直说：当某卡点在 A 股没有干净对应（mapStatus=no-equivalent / unverifiable）时，报告结构性缺口与研究方向，不硬凑标的。国产替代型机会标记为 domestic-substitution-play。
+5. 地缘只作上下文：国产替代溢价、出口管制/制裁折扣只作为风险与覆盖缺口呈现，绝不进入产业逻辑评分，不得抬高候选分数或置信度。
+6. 不引用、不扮演：不得引用 Serenity 对具体个股的买卖结论作为 A 股理由，不得以第一人称扮演 Serenity。
 
 ## 推理出处分层
 
@@ -305,7 +317,9 @@ export function relevantSourcesForCandidate(
   sources: SourceRecord[],
   matchedThemes = matchThemes(stock),
 ): SourceRecord[] {
-  return sources.filter((source) => sourceMatchesCandidate(source, stock, matchedThemes));
+  return sources.filter(
+    (source) => sourceMatchesCandidate(source, stock, matchedThemes) && !isSerenityFrameworkSource(source),
+  );
 }
 
 function strongestTier(sources: SourceRecord[]): "P0" | "P1" | "P2" {

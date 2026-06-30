@@ -117,6 +117,18 @@ export const SEED_SOURCES: SourceRecord[] = [
     evidenceTags: ["Serenity", "eval", "red-team", "risk-boundary", "methodology-quality"],
   },
   {
+    id: "SERENITY-ALEABITOREDDIT-ARCHIVE-20260611",
+    title: "yan-labs/serenity-aleabitoreddit thesis archive skill",
+    tier: "P1",
+    sourceType: "repo",
+    publisher: "GitHub / yan-labs",
+    observedAt: "2026-06-12",
+    url: "https://github.com/yan-labs/serenity-aleabitoreddit",
+    summary:
+      "Installable Agent Skill distilling Serenity's public output (tweet archive through 2026-06-08, long-form articles, per-ticker thesis base, dated track record). Used only as a chokepoint taxonomy and research line-of-inquiry generator; its US/HK per-ticker calls are NOT A-share candidate evidence and MUST be re-confirmed by independent A-share P0 filings.",
+    evidenceTags: ["Serenity", "thesis-archive", "chokepoint-taxonomy", "line-of-inquiry", "methodology-distillation", "non-impersonation", "cross-market"],
+  },
+  {
     id: "TOPICDIGG-SERENITY-PROFILE",
     title: "TopicDigg Serenity profile mirror",
     tier: "P2",

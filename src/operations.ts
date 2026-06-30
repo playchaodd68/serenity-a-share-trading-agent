@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { findEnvKeys, getModel } from "@earendil-works/pi-ai";
 import { callFfdTool, checkFfdHealth, classifyFfdToolText, renderFfdToolResultWithStatus, sanitizeFfdText } from "./connectors/ffd.js";
+import { anthropicOAuthStatus } from "./auth/anthropic-oauth.js";
 import { getConfig, knowledgebasePath, type AppConfig } from "./config.js";
 import { findLatestRun } from "./report.js";
 import { mergeSources } from "./sources/registry.js";
@@ -59,6 +60,17 @@ export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<
   const sources = mergeSources(persistedSources, SEED_SOURCES);
   const configuredModel = getModel(config.modelProvider as any, config.modelName as any);
   const modelEnvKeys = findEnvKeys(config.modelProvider as any);
+  // A Claude subscription login (OAuth credential file) also satisfies model auth,
+  // even though it is not an environment API key.
+  const anthropicLoggedIn = config.modelProvider === "anthropic" ? (await anthropicOAuthStatus(config.anthropicOAuthCredentialsPath)).loggedIn : false;
+  const hasModelAuth = Boolean(modelEnvKeys?.length) || anthropicLoggedIn;
+  const modelAuthDetail = anthropicLoggedIn
+    ? "Claude subscription OAuth login"
+    : modelEnvKeys?.length
+      ? modelEnvKeys.join(", ")
+      : config.modelProvider === "anthropic"
+        ? "not logged in (run npm run auth:anthropic) and no ANTHROPIC_OAUTH_TOKEN/ANTHROPIC_API_KEY"
+        : `no API key found for provider ${config.modelProvider}`;
   const tierCounts = sources.reduce<Record<SourceTier, number>>(
     (counts, source) => {
       counts[source.tier] += 1;
@@ -163,7 +175,7 @@ export async function diagnoseRuntime(config: AppConfig = getConfig()): Promise<
         : "not configured",
     ),
     check("model-config", Boolean(configuredModel), "error", `${config.modelProvider}/${config.modelName}`),
-    check("model-api-key", Boolean(modelEnvKeys?.length), "warning", modelEnvKeys?.join(", ") ?? `no API key found for provider ${config.modelProvider}`),
+    check("model-api-key", hasModelAuth, "warning", modelAuthDetail),
   ];
 
   return {

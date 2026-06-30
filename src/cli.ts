@@ -16,6 +16,7 @@ import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuChatText, sendFeishuMarkdown, sendFeishuOpenIdText, sendFeishuTextByReceiveId } from "./feishu/feishu.js";
 import { createTradingAgent, TRADING_AGENT_SYSTEM_PROMPT } from "./agent/trading-agent.js";
+import { anthropicOAuthStatus, runAnthropicLogin } from "./auth/anthropic-oauth.js";
 import { createTradingChatSession, promptTradingChatSession, runInteractiveChat, saveChatSession, startChatHttpServer, type TradingChatSession } from "./chatbot/chatbot.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
@@ -499,6 +500,36 @@ async function doctor() {
 async function showAgent() {
   const { metadata } = createTradingAgent();
   console.log(JSON.stringify(metadata, null, 2));
+}
+
+async function authAnthropicCommand() {
+  const config = getConfig();
+  if (config.modelProvider !== "anthropic") {
+    console.log(
+      `提示：当前 TRADING_AGENT_MODEL_PROVIDER=${config.modelProvider}。要用 Claude Pro/Max 订阅，请设置 TRADING_AGENT_MODEL_PROVIDER=anthropic 和 TRADING_AGENT_MODEL（如 claude-opus-4-8）。仍会继续登录。`,
+    );
+  }
+  const { createInterface } = await import("node:readline/promises");
+  const { stdin, stdout } = await import("node:process");
+  const rl = createInterface({ input: stdin, output: stdout });
+  try {
+    const status = await runAnthropicLogin((message) => rl.question(message), (message) => stdout.write(`${message}\n`));
+    console.log(`\n✓ 已登录 Claude 订阅，凭证保存在 ${status.path}（仅本机，已 gitignore）。`);
+    console.log(`访问令牌到期：${status.expiresAt}；每次请求会自动用刷新令牌续期。`);
+  } finally {
+    rl.close();
+  }
+}
+
+async function authAnthropicStatusCommand() {
+  const status = await anthropicOAuthStatus();
+  if (!status.loggedIn) {
+    console.log(`未登录 Claude 订阅。运行：npm run auth:anthropic\n凭证路径：${status.path}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`已登录。凭证：${status.path}`);
+  console.log(`访问令牌到期：${status.expiresAt}${status.expired ? "（已过期，下次请求会自动刷新）" : ""}`);
 }
 
 async function showWatchlist() {
@@ -990,6 +1021,12 @@ async function main() {
     case "agent":
       await showAgent();
       break;
+    case "auth-anthropic":
+      await authAnthropicCommand();
+      break;
+    case "auth-anthropic-status":
+      await authAnthropicStatusCommand();
+      break;
     case "ffd-auto-rules":
       console.log(renderFfdAutoDownloadGuide());
       break;
@@ -1000,7 +1037,7 @@ async function main() {
       console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent|auth-anthropic|auth-anthropic-status>");
       process.exitCode = 1;
   }
 }
