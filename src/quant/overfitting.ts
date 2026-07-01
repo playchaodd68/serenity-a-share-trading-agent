@@ -180,3 +180,133 @@ export function assessBacktestOverfitting(netReturns: number[], numTrials: numbe
     passes: dsr.dsr >= threshold,
   };
 }
+
+// --- Combinatorially-Symmetric Cross-Validation (CSCV) / Probability of Backtest
+// Overfitting (Bailey, Borwein, López de Prado, Zhu 2014). Unlike the single-series
+// Deflated Sharpe guard, CSCV takes the whole config-search matrix (each configuration's
+// per-period performance) and estimates how often the in-sample-best config lands below
+// the median out-of-sample — the direct probability that the "winning" backtest is overfit.
+
+const DEFAULT_CSCV_BLOCKS = 10;
+
+export interface CscvOptions {
+  blocks?: number;
+  // Performance metric over a period subset; defaults to mean return. NOTE: probabilityOfLoss
+  // treats a metric value < 0 as a loss, so a custom metric should be return-like (zero-centered)
+  // for that field to be meaningful (pbo/logits are metric-scale-invariant and unaffected).
+  metric?: (values: number[]) => number;
+}
+
+export interface CscvResult {
+  pbo: number;
+  nConfigs: number;
+  nBlocks: number;
+  nCombinations: number;
+  logits: number[];
+  medianLogit: number;
+  probabilityOfLoss: number;
+  performanceDegradation: { inSample: number; outOfSample: number };
+}
+
+function combinations(n: number, k: number): number[][] {
+  const result: number[][] = [];
+  const combo: number[] = [];
+  const recurse = (start: number): void => {
+    if (combo.length === k) {
+      result.push([...combo]);
+      return;
+    }
+    for (let i = start; i < n; i += 1) {
+      combo.push(i);
+      recurse(i + 1);
+      combo.pop();
+    }
+  };
+  recurse(0);
+  return result;
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+export function cscvPbo(matrix: number[][], options: CscvOptions = {}): CscvResult {
+  const nConfigs = matrix.length;
+  if (nConfigs < 2) throw new Error(`cscvPbo needs at least 2 configurations (got ${nConfigs}).`);
+  const periods = matrix[0].length;
+  if (!matrix.every((row) => row.length === periods)) {
+    throw new Error("cscvPbo needs a rectangular matrix (all configs share the same period count).");
+  }
+  const blocks = options.blocks ?? Math.min(DEFAULT_CSCV_BLOCKS, periods - (periods % 2));
+  if (blocks < 2) throw new Error(`cscvPbo needs at least 2 blocks (got ${blocks}).`);
+  if (blocks % 2 !== 0) throw new Error(`cscvPbo needs an even block count (got ${blocks}).`);
+  if (blocks > periods) throw new Error(`cscvPbo needs blocks (${blocks}) <= periods (${periods}).`);
+
+  const metric = options.metric ?? ((values: number[]) => (values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length));
+
+  const blockPeriods: number[][] = [];
+  for (let b = 0; b < blocks; b += 1) {
+    const start = Math.round((b * periods) / blocks);
+    const end = Math.round(((b + 1) * periods) / blocks);
+    const idx: number[] = [];
+    for (let i = start; i < end; i += 1) idx.push(i);
+    blockPeriods.push(idx);
+  }
+
+  const trainCombos = combinations(blocks, blocks / 2);
+  const logits: number[] = [];
+  let overfitCount = 0;
+  let lossCount = 0;
+  let inSampleSum = 0;
+  let outOfSampleSum = 0;
+
+  for (const trainBlocks of trainCombos) {
+    const trainSet = new Set(trainBlocks);
+    const trainPeriods = trainBlocks.flatMap((b) => blockPeriods[b]);
+    const testPeriods = blockPeriods.filter((_, b) => !trainSet.has(b)).flat();
+
+    const inSample = matrix.map((row) => metric(trainPeriods.map((p) => row[p])));
+    const outOfSample = matrix.map((row) => metric(testPeriods.map((p) => row[p])));
+
+    let best = 0;
+    for (let c = 1; c < nConfigs; c += 1) if (inSample[c] > inSample[best]) best = c;
+
+    const selectedOos = outOfSample[best];
+    const rank = outOfSample.filter((value) => value <= selectedOos).length; // 1..N ascending
+    const omega = rank / (nConfigs + 1); // in (0,1), so logit is always finite
+    const lambda = Math.log(omega / (1 - omega));
+    logits.push(lambda);
+    if (lambda < 0) overfitCount += 1;
+    if (selectedOos < 0) lossCount += 1;
+    inSampleSum += inSample[best];
+    outOfSampleSum += selectedOos;
+  }
+
+  const combos = trainCombos.length;
+  return {
+    pbo: combos === 0 ? 0 : overfitCount / combos,
+    nConfigs,
+    nBlocks: blocks,
+    nCombinations: combos,
+    logits,
+    medianLogit: median(logits),
+    probabilityOfLoss: combos === 0 ? 0 : lossCount / combos,
+    performanceDegradation: {
+      inSample: combos === 0 ? 0 : inSampleSum / combos,
+      outOfSample: combos === 0 ? 0 : outOfSampleSum / combos,
+    },
+  };
+}
+
+export function renderCscv(result: CscvResult): string {
+  return [
+    `CSCV / PBO: configs=${result.nConfigs}, blocks=${result.nBlocks}, combinations=${result.nCombinations}`,
+    `Probability of backtest overfitting (PBO): ${(result.pbo * 100).toFixed(1)}%`,
+    `Probability of OOS loss for the in-sample winner: ${(result.probabilityOfLoss * 100).toFixed(1)}%`,
+    `Performance degradation: in-sample ${result.performanceDegradation.inSample.toFixed(4)} -> out-of-sample ${result.performanceDegradation.outOfSample.toFixed(4)}`,
+    `Median logit: ${result.medianLogit.toFixed(3)} (negative => selection tends to overfit)`,
+  ].join("\n");
+}

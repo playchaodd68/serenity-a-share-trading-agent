@@ -14,6 +14,8 @@
     "research:refresh": "tsx src/cli.ts research-refresh",
     "watchlist": "tsx src/cli.ts watchlist",
     "calibration": "tsx src/cli.ts calibration",
+    "resolutions": "tsx src/cli.ts resolutions",
+    "graveyard": "tsx src/cli.ts graveyard",
     "evals": "tsx src/cli.ts evals",
     "quant:adapt-history": "tsx src/cli.ts quant-adapt-history",
     "quant:backtest": "tsx src/cli.ts quant-backtest",
