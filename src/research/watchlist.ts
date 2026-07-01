@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { Candidate, ScreenRun, WatchlistEntry, WatchlistEvent, WatchlistStatus } from "../types.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
+import { evidenceHasCandidateP0 } from "./evidence.js";
 
 export const WATCHLIST_PATH = path.resolve("data/watchlist.json");
 
@@ -13,7 +14,7 @@ function addDays(iso: string, days: number): string {
 function evidenceState(candidate: Candidate): WatchlistEntry["evidenceState"] {
   const evidence = candidate.trace.structuredEvidence ?? [];
   return {
-    hasCandidateP0: evidence.some((item) => item.direct && item.tier === "P0" && item.kind === "primary-filing"),
+    hasCandidateP0: evidenceHasCandidateP0(evidence),
     directEvidenceCount: evidence.filter((item) => item.direct).length,
     corroboratingEvidenceCount: evidence.filter((item) => !item.direct && item.polarity !== "negative").length,
     riskEvidenceCount: evidence.filter((item) => item.polarity === "negative" || item.kind === "risk").length,
@@ -72,6 +73,7 @@ function fromCandidate(candidate: Candidate, now: string): WatchlistEntry {
       ),
       event(now, "review-scheduled", `Next review scheduled for ${addDays(now, reviewCadenceDays(status)).slice(0, 10)}.`),
     ],
+    killCriteria: candidate.trace.killCriteria ?? [],
   };
 }
 
@@ -98,6 +100,8 @@ function updateEntry(existing: WatchlistEntry, candidate: Candidate, now: string
     coverageGaps: candidate.trace.coverageGaps,
     nextActions: nextActions(candidate),
     events: trimEvents(events),
+    // Kill criteria are pinned to first entry so due dates do not reset each run.
+    killCriteria: existing.killCriteria ?? candidate.trace.killCriteria ?? [],
   };
 }
 

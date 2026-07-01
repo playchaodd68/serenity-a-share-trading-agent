@@ -116,11 +116,15 @@ export function extractCandidateEvidence(candidate: Candidate, sources: SourceRe
     .sort((a, b) => b.confidence - a.confidence || a.sourceId.localeCompare(b.sourceId));
 }
 
+export function evidenceHasCandidateP0(evidence: ResearchEvidence[]): boolean {
+  return evidence.some((item) => item.direct && item.tier === "P0" && item.kind === "primary-filing");
+}
+
 export function summarizeEvidence(evidence: ResearchEvidence[]): EvidenceSummary {
   const direct = evidence.filter((item) => item.direct);
   const risks = evidence.filter((item) => item.polarity === "negative" || item.kind === "risk");
   const corroborating = evidence.filter((item) => !item.direct && item.polarity !== "negative");
-  const hasCandidateP0 = direct.some((item) => item.tier === "P0" && item.kind === "primary-filing");
+  const hasCandidateP0 = evidenceHasCandidateP0(evidence);
   const strongest = [...evidence].sort((a, b) => b.confidence - a.confidence || a.sourceId.localeCompare(b.sourceId)).slice(0, 5);
   const nextActions = [
     ...(hasCandidateP0 ? [] : ["补齐候选公司级 P0：年报、公告、互动问答或监管披露中的具体公司记录。"]),

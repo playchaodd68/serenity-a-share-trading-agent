@@ -1,4 +1,5 @@
 import type { QuantCandidateBucket, QuantEvidenceGate } from "../types.js";
+import { assessBacktestOverfitting, type OverfittingGuard } from "./overfitting.js";
 
 export const SERENITY_QUANT_BACKTEST = "Serenity Mainline Quant Backtest" as const;
 
@@ -38,6 +39,8 @@ export interface QuantBacktestOptions {
   periodsPerYear?: number;
   allowLimitUpBuys?: boolean;
   allowLimitDownSells?: boolean;
+  // Number of factor/parameter configurations searched, for multiple-testing correction.
+  trials?: number;
 }
 
 export interface EffectiveQuantBacktestOptions {
@@ -52,6 +55,7 @@ export interface EffectiveQuantBacktestOptions {
   periodsPerYear: number;
   allowLimitUpBuys: boolean;
   allowLimitDownSells: boolean;
+  trials: number;
 }
 
 export interface QuantBacktestSelectedPosition {
@@ -132,6 +136,7 @@ export interface QuantBacktestResult {
   ic: QuantBacktestIc[];
   groupReturns: QuantBacktestGroupReturn[];
   bucketStats: QuantBacktestBucketStat[];
+  overfitting?: OverfittingGuard;
   notes: string[];
 }
 
@@ -154,6 +159,7 @@ function effectiveOptions(options: QuantBacktestOptions = {}): EffectiveQuantBac
     periodsPerYear: Math.max(1, options.periodsPerYear ?? 52),
     allowLimitUpBuys: options.allowLimitUpBuys ?? false,
     allowLimitDownSells: options.allowLimitDownSells ?? false,
+    trials: Math.max(1, Math.floor(options.trials ?? 1)),
   };
 }
 
@@ -535,6 +541,11 @@ export function runQuantBacktest(inputSnapshots: QuantBacktestSnapshot[], rawOpt
     previousWeights = nextWeights;
   }
 
+  const overfitting =
+    options.trials >= 2 && periods.length >= 2
+      ? assessBacktestOverfitting(periods.map((period) => period.netReturn), options.trials)
+      : undefined;
+
   return {
     strategy: SERENITY_QUANT_BACKTEST,
     generatedAt: new Date().toISOString(),
@@ -544,10 +555,16 @@ export function runQuantBacktest(inputSnapshots: QuantBacktestSnapshot[], rawOpt
     ic: snapshots.map(rankIcFor),
     groupReturns: groupReturnsFor(snapshots),
     bucketStats: bucketStatsFor(snapshots, periods),
+    overfitting,
     notes: [
       "输入契约：每个 snapshot 表示调仓日截面，candidate.forwardReturn 为调仓后下一持有期收益率，小数格式如 0.05。",
       "组合构建：默认等权持有 core/watchlist，行业权重用持仓数量近似约束；技术面只确认趋势和交易可执行性。",
       "交易约束：默认不能涨停新买入、不能跌停卖出，停牌/不可交易持仓沿用上一期权重。",
+      ...(overfitting
+        ? [
+            `过拟合护栏：trials=${overfitting.numTrials}，Deflated Sharpe=${overfitting.deflatedSharpe.dsr.toFixed(3)}（阈值 ${overfitting.threshold}）→ ${overfitting.passes ? "通过多重检验校正" : "未通过，疑似样本内过拟合"}。传入 options.trials 以启用。`,
+          ]
+        : ["过拟合护栏：未启用（传入 options.trials>=2 以做 Deflated Sharpe/PBO 多重检验校正）。"]),
       NO_CROWDING_BACKTEST_NOTE,
     ],
   };
@@ -582,6 +599,9 @@ export function renderQuantBacktestReport(result: QuantBacktestResult): string {
     `- Calmar: ${formatNumber(result.metrics.calmar, 2)}`,
     `- Hit rate: ${formatPct(result.metrics.hitRate)}; avg turnover: ${formatPct(result.metrics.avgTurnover)}; avg traded weight: ${formatPct(result.metrics.avgTradedWeight)}`,
     `- Average rank IC: ${formatNumber(averageRankIc, 3)}`,
+    result.overfitting
+      ? `- Overfitting guard: trials=${result.overfitting.numTrials}, PSR>0=${formatNumber(result.overfitting.psrPositive, 3)}, Deflated Sharpe=${formatNumber(result.overfitting.deflatedSharpe.dsr, 3)} (threshold ${result.overfitting.threshold}) => ${result.overfitting.passes ? "PASS" : "FAIL (likely overfit)"}`
+      : "- Overfitting guard: not run (pass options.trials>=2 to enable Deflated Sharpe correction)",
     "",
     latest
       ? [

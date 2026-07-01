@@ -130,6 +130,9 @@ export interface MethodologyTrace {
   nextActions?: string[];
   risks: string[];
   coverageGaps: string[];
+  killCriteria?: KillCriterion[];
+  negativeSignals?: string[];
+  supplyReleaseSignals?: string[];
 }
 
 export interface AShareStock {
@@ -153,6 +156,34 @@ export interface BottleneckTheme {
   keywords: string[];
   positiveSignals: string[];
   negativeSignals: string[];
+}
+
+export interface NegativeSignalAssessment {
+  matched: Array<{ themeId: string; label: string; signals: string[] }>;
+  hitSignals: string[];
+  penalty: number;
+}
+
+export interface SupplyReleaseAssessment {
+  hitTerms: string[];
+  penalty: number;
+}
+
+export type KillCriterionCategory =
+  | "evidence-gap"
+  | "expectation-window"
+  | "negative-signal"
+  | "supply-release"
+  | "valuation";
+
+export interface KillCriterion {
+  id: string;
+  category: KillCriterionCategory;
+  trigger: string;
+  dueDate: string;
+  sourceCheck: string;
+  posteriorDelta: number;
+  signal?: string;
 }
 
 export interface Candidate {
@@ -231,7 +262,7 @@ export interface ScreenRun {
 
 export interface WatchlistEvent {
   at: string;
-  type: "created" | "updated" | "status-changed" | "score-changed" | "evidence-changed" | "review-scheduled";
+  type: "created" | "updated" | "status-changed" | "score-changed" | "evidence-changed" | "review-scheduled" | "kill-triggered";
   detail: string;
 }
 
@@ -253,6 +284,7 @@ export interface WatchlistEntry {
   coverageGaps: string[];
   nextActions: string[];
   events: WatchlistEvent[];
+  killCriteria?: KillCriterion[];
 }
 
 export interface CalibrationSnapshot {
@@ -270,6 +302,76 @@ export interface CalibrationSnapshot {
     exited: string[];
     retained: string[];
   };
+}
+
+export interface CandidateResolution {
+  code: string;
+  name: string;
+  posterior: number;
+  probability: number;
+  confidence: Candidate["confidence"];
+  evidenceTier: "P0-anchored" | "P0-capped";
+  entryDate: string;
+  horizonDays: number;
+  stockReturn: number;
+  benchmarkReturn: number;
+  realizedAlpha: number;
+  outcome: 0 | 1;
+  outcomeLabel: "validated" | "falsified" | "inconclusive";
+  brier: number;
+  resolvedAt: string;
+}
+
+export interface ReliabilityBin {
+  bucket: string;
+  count: number;
+  meanConfidence: number;
+  empiricalRate: number;
+  brier: number;
+}
+
+export interface ResolutionTierStat<T extends string> {
+  tier: T;
+  count: number;
+  meanPosterior: number;
+  empiricalHitRate: number;
+  brier: number;
+}
+
+export interface ResolutionCalibration {
+  generatedAt: string;
+  resolved: number;
+  brierMean: number;
+  logScoreMean: number;
+  ece: number;
+  overconfidenceGap: number;
+  reliabilityBins: ReliabilityBin[];
+  byConfidenceTier: Array<ResolutionTierStat<Candidate["confidence"]>>;
+  byEvidenceTier: Array<ResolutionTierStat<CandidateResolution["evidenceTier"]>>;
+}
+
+export type GraveyardReason = "below-entry-bar" | "kill-triggered" | "downgraded" | "manual-reject";
+
+export interface GraveyardEntry {
+  code: string;
+  name: string;
+  reason: GraveyardReason;
+  score: number;
+  confidence: Candidate["confidence"];
+  matchedThemes: string[];
+  killedCriterionIds: string[];
+  detail: string;
+  buriedAt: string;
+  realizedAlpha?: number;
+  outcomeLabel?: CandidateResolution["outcomeLabel"];
+}
+
+export interface GraveyardSummary {
+  total: number;
+  byReason: Record<string, number>;
+  byTheme: Array<{ theme: string; count: number }>;
+  resolvedWithOutcome: number;
+  buriedHitRate: number | null;
 }
 
 export interface AnswerSafetyEvalResult {

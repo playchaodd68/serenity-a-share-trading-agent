@@ -45,7 +45,21 @@ import {
 } from "./research/report-library.js";
 import { renderFfdAutoDownloadGuide } from "./research/ffd-auto-download.js";
 import { loadWatchlist, renderWatchlistSummary, saveWatchlist, updateWatchlistFromRun } from "./research/watchlist.js";
-import type { ScreenRun, WatchlistEntry } from "./types.js";
+import { evaluateKillCriteria } from "./research/kill-criteria.js";
+import {
+  attachGraveyardOutcomes,
+  buryBelowBar,
+  buryDowngraded,
+  buryKilled,
+  loadGraveyard,
+  mergeGraveyard,
+  renderGraveyardSummary,
+  saveGraveyard,
+  summarizeGraveyard,
+} from "./research/graveyard.js";
+import { evidenceHasCandidateP0 } from "./research/evidence.js";
+import { loadResolutions } from "./research/resolution.js";
+import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "./types.js";
 
 async function ingestSerenity() {
   const config = getConfig();
@@ -398,11 +412,50 @@ function shouldRouteDirectlyToFfd(text: string): boolean {
   return /(最新价|现价|涨跌幅|成交量|成交额|实时快照|实时|现在|行情快照|当前价格|盘口|资金流向|北向资金|主力资金|分时|日内|分钟行情|技术指标|RSI|MACD|均线|支撑位|阻力位|行业景气|景气度|产业指标|公告|财务指标|估值分位|新闻快讯)/i.test(trimmed);
 }
 
+// Record passed-over / killed / downgraded theses so hit-rate is not survivor-only.
+async function updateGraveyard(run: ScreenRun, watchlist: WatchlistEntry[], matched: Candidate[]): Promise<GraveyardEntry[]> {
+  const now = run.generatedAt;
+  const pinnedCriteria = new Map(watchlist.map((entry) => [entry.code, entry.killCriteria ?? []]));
+  const additions: GraveyardEntry[] = [];
+
+  for (const candidate of run.candidates) {
+    const criteria = pinnedCriteria.get(candidate.stock.code) ?? candidate.trace.killCriteria ?? [];
+    if (criteria.length === 0) continue;
+    const evaluation = evaluateKillCriteria(
+      criteria,
+      {
+        hasCandidateP0: evidenceHasCandidateP0(candidate.trace.structuredEvidence ?? []),
+        activeNegativeSignals: candidate.trace.negativeSignals ?? [],
+      },
+      now,
+    );
+    if (evaluation.fired.length > 0) additions.push(buryKilled(candidate, evaluation.fired, now));
+  }
+
+  // Passed-over: matched candidates that scored below the topN cut are the most common
+  // survivorship-bias source; bury them so base rates are not survivor-only.
+  const cutScore = run.candidates.length > 0 ? Math.min(...run.candidates.map((candidate) => candidate.score)) : 0;
+  additions.push(...buryBelowBar(matched, cutScore, now));
+
+  for (const entry of watchlist) {
+    if (entry.status === "downgraded" || entry.status === "archived") additions.push(buryDowngraded(entry, now));
+  }
+
+  const resolutions = await loadResolutions();
+  const merged = attachGraveyardOutcomes(mergeGraveyard(await loadGraveyard(), additions), resolutions);
+  await saveGraveyard(merged);
+  return merged;
+}
+
 async function runScreenPipeline(sendNotification = true) {
   const config = getConfig();
   let sources = mergeSources(await seedSourceRegistry(), [EASTMONEY_SOURCE]);
   await saveSourceRegistry(sources);
-  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN });
+  let matched: Candidate[] = [];
+  const collectMatched = (candidates: Candidate[]) => {
+    matched = candidates;
+  };
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, onMatched: collectMatched });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
   if (cninfo.warnings.length > 0) {
     for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
@@ -411,10 +464,15 @@ async function runScreenPipeline(sendNotification = true) {
     sources = mergeSources(sources, cninfo.sources);
     await saveSourceRegistry(sources);
   }
-  const run = cninfo.sources.length > 0 ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN }) : preliminaryRun;
+  const run =
+    cninfo.sources.length > 0
+      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, onMatched: collectMatched })
+      : preliminaryRun;
   const completed = await writeScreenReport(run);
   const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
   await saveWatchlist(watchlist);
+  const graveyard = await updateGraveyard(completed, watchlist, matched);
+  const graveyardSummary = summarizeGraveyard(graveyard);
   const artifacts = await writeResearchArtifacts(completed, watchlist);
   await appendJsonl("runs/screen.jsonl", {
     type: "screen",
@@ -423,12 +481,13 @@ async function runScreenPipeline(sendNotification = true) {
     candidates: completed.candidates.length,
     cninfoP0Sources: cninfo.sources.length,
     cninfoWarnings: cninfo.warnings,
+    graveyard: { total: graveyardSummary.total, resolved: graveyardSummary.resolvedWithOutcome, buriedHitRate: graveyardSummary.buriedHitRate },
     artifacts,
   });
   if (sendNotification && (await notifyFeishu("A股产业瓶颈筛选", renderFeishuSummary(completed)))) {
     console.log("Sent Feishu notification.");
   }
-  return { run: completed, watchlist, artifacts };
+  return { run: completed, watchlist, graveyard: graveyardSummary, artifacts };
 }
 
 async function screen() {
@@ -437,6 +496,7 @@ async function screen() {
   console.log(`Updated watchlist: ${result.artifacts.watchlistPath}`);
   console.log(`Wrote evidence snapshot: ${result.artifacts.evidencePath}`);
   console.log(`Wrote graph snapshot: ${result.artifacts.graphPath}`);
+  console.log(renderGraveyardSummary(result.graveyard));
 }
 
 async function dailyRun() {
