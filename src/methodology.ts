@@ -5,11 +5,14 @@ import type {
   EvidenceItem,
   IndustryLogicAssessment,
   MethodologyTrace,
+  NegativeSignalAssessment,
   ScoreComponent,
   SourceRecord,
+  SupplyReleaseAssessment,
 } from "./types.js";
 import { extractCandidateEvidence, summarizeEvidence } from "./research/evidence.js";
 import { buildSupplyChainGraph } from "./research/graph.js";
+import { buildKillCriteria } from "./research/kill-criteria.js";
 
 export const DEFAULT_THEMES: BottleneckTheme[] = [
   {
@@ -300,6 +303,62 @@ export function assessIndustryLogic(
   };
 }
 
+const NEGATIVE_SIGNAL_UNIT_PENALTY = 3;
+const NEGATIVE_SIGNAL_MAX_PENALTY = 18;
+
+// Capital-cycle / supply-side reversal terms. Distinct from theme negativeSignals and from
+// the positive supply/demand terms (which reward 产能放量/扩产订单): these are unambiguous
+// oversupply / capacity-overshoot / competitive-entry signals that dissolve a chokepoint.
+const SUPPLY_RELEASE_TERMS = [
+  "产能过剩",
+  "供给过剩",
+  "供给释放",
+  "产能释放",
+  "大幅扩产",
+  "扩产潮",
+  "新进入者",
+  "低价竞争",
+  "过度扩产",
+  "供给冲击",
+  "同质化竞争",
+  "产能利用率下降",
+];
+
+const SUPPLY_RELEASE_UNIT_PENALTY = 3;
+const SUPPLY_RELEASE_MAX_PENALTY = 15;
+
+export function assessNegativeSignals(
+  stock: AShareStock,
+  sources: SourceRecord[],
+  matchedThemes = matchThemes(stock),
+  themes = DEFAULT_THEMES,
+): NegativeSignalAssessment {
+  const text = combinedResearchText(stock, sources, matchedThemes);
+  const matchedIds = new Set(matchedThemes.map((match) => match.themeId));
+  const matched = themes
+    .filter((theme) => matchedIds.has(theme.id))
+    .map((theme) => ({
+      themeId: theme.id,
+      label: theme.label,
+      signals: uniqueStrings(theme.negativeSignals.filter((signal) => text.includes(signal.toLowerCase()))),
+    }))
+    .filter((entry) => entry.signals.length > 0);
+  const hitSignals = uniqueStrings(matched.flatMap((entry) => entry.signals));
+  const penalty = clamp(hitSignals.length * NEGATIVE_SIGNAL_UNIT_PENALTY, 0, NEGATIVE_SIGNAL_MAX_PENALTY);
+  return { matched, hitSignals, penalty };
+}
+
+export function assessSupplyRelease(
+  stock: AShareStock,
+  sources: SourceRecord[],
+  matchedThemes = matchThemes(stock),
+): SupplyReleaseAssessment {
+  const text = combinedResearchText(stock, sources, matchedThemes);
+  const hitTerms = matchingTerms(text, SUPPLY_RELEASE_TERMS);
+  const penalty = clamp(hitTerms.length * SUPPLY_RELEASE_UNIT_PENALTY, 0, SUPPLY_RELEASE_MAX_PENALTY);
+  return { hitTerms, penalty };
+}
+
 export function relevantSourcesForCandidate(
   stock: AShareStock,
   sources: SourceRecord[],
@@ -348,6 +407,8 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
   const marketConfirmationScore = (stock.turnover == null ? 1 : stock.turnover >= 3 ? 3 : stock.turnover >= 1 ? 2 : 0) + ((stock.mainNetInflow ?? 0) > 0 ? 2 : 0);
   const quality = sourceQualityScore(candidateSources);
   const industrySourceIds = componentSources(candidateSources);
+  const negativeAssessment = assessNegativeSignals(stock, candidateSources, matchedThemes, themes);
+  const supplyAssessment = assessSupplyRelease(stock, candidateSources, matchedThemes);
 
   const components: ScoreComponent[] = [
     {
@@ -396,6 +457,26 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
       reason: `Turnover ${stock.turnover == null ? "n/a" : `${stock.turnover.toFixed(2)}%`}; main net inflow ${(stock.mainNetInflow ?? 0) > 0 ? "positive" : "not positive"}.`,
       sourceIds: ["EASTMONEY-A-SHARE-SNAPSHOT"],
     },
+    {
+      name: "negative-signal-penalty",
+      score: negativeAssessment.penalty > 0 ? -negativeAssessment.penalty : 0,
+      maxScore: 0,
+      reason:
+        negativeAssessment.hitSignals.length > 0
+          ? `瓶颈空头信号触发后验下调：${negativeAssessment.hitSignals.join("、")}。`
+          : "未匹配到配置内主题空头信号（替代路线/客户自研/价格战/技术路线切换等）。",
+      sourceIds: industrySourceIds,
+    },
+    {
+      name: "capital-cycle-supply",
+      score: supplyAssessment.penalty > 0 ? -supplyAssessment.penalty : 0,
+      maxScore: 0,
+      reason:
+        supplyAssessment.hitTerms.length > 0
+          ? `资本周期/供给侧释放下调后验（瓶颈耐久度削弱）：${supplyAssessment.hitTerms.join("、")}。`
+          : "未见供给过剩/大幅扩产/新进入者等资本周期反转信号。",
+      sourceIds: industrySourceIds,
+    },
   ];
 
   const priorScore = clamp(industryLogic.totalScore);
@@ -406,8 +487,8 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     id: `EV-${index + 1}`,
     title: component.name,
     tier: component.name === "source-quality" ? strongestTier(candidateSources) : "P2",
-    polarity: component.score > 0 ? "positive" : "neutral",
-    weight: component.score,
+    polarity: component.score > 0 ? "positive" : component.score < 0 ? "negative" : "neutral",
+    weight: Math.abs(component.score),
     description: component.reason,
     sourceIds: component.sourceIds,
     tags: [component.name],
@@ -418,7 +499,14 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     "产业链映射可能存在客户 NDA、误读或验证周期延迟。",
   ];
   if (stock.pe != null && stock.pe < 0) risks.push("当前 PE 为负，盈利质量需要额外核验。");
+  if (negativeAssessment.hitSignals.length > 0) {
+    risks.push(`瓶颈空头信号: ${negativeAssessment.hitSignals.join(" / ")}（已计入后验下调 ${negativeAssessment.penalty} 分）。`);
+  }
+  if (supplyAssessment.hitTerms.length > 0) {
+    risks.push(`资本周期反转信号: ${supplyAssessment.hitTerms.join(" / ")}（供给释放削弱瓶颈耐久度，已计入后验下调 ${supplyAssessment.penalty} 分）。`);
+  }
 
+  const generatedAt = new Date().toISOString();
   const trace: MethodologyTrace = {
     priorScore,
     posteriorScore,
@@ -428,6 +516,8 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     evidence,
     risks,
     coverageGaps: [],
+    negativeSignals: negativeAssessment.hitSignals,
+    supplyReleaseSignals: supplyAssessment.hitTerms,
   };
   const candidate: Candidate = {
     stock,
@@ -435,7 +525,7 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     score: expectedValueScore,
     confidence: expectedValueScore >= 45 ? "medium" : "low",
     trace,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
   };
 
   const structuredEvidence = extractCandidateEvidence(candidate, sources);
@@ -454,6 +544,16 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
   if (!hasCandidateP0) coverageGaps.push("全局主来源目录不能替代候选级 P0 证据；需补齐该公司/该环节的公告、年报或监管披露。");
   for (const gap of graph.unresolvedLinks) coverageGaps.push(gap);
 
+  const killCriteria = buildKillCriteria({
+    matchedThemeLabels: matchedThemes.map((theme) => theme.label),
+    hasCandidateP0,
+    expectationGapScore: industryLogic.expectationGapScore,
+    negativeHitSignals: negativeAssessment.hitSignals,
+    supplyReleaseTerms: supplyAssessment.hitTerms,
+    pe: stock.pe,
+    entryDate: generatedAt,
+  });
+
   candidate.confidence = expectedValueScore >= 70 && hasCandidateP0 && hasIndependentCorroboration ? "high" : expectedValueScore >= 45 ? "medium" : "low";
   candidate.trace = {
     ...trace,
@@ -461,6 +561,7 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     graph,
     nextActions: evidenceSummary.nextActions,
     coverageGaps: [...new Set(coverageGaps)],
+    killCriteria,
   };
 
   return candidate;

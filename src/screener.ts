@@ -7,6 +7,9 @@ export interface ScreenOptions {
   maxRows: number;
   topN: number;
   stocks?: Awaited<ReturnType<typeof fetchAShareSnapshot>>;
+  // Receives every matched candidate (before the topN cut) so callers can record
+  // passed-over theses; not persisted on the ScreenRun.
+  onMatched?: (matched: Candidate[]) => void;
 }
 
 export async function screenCandidates(sources: SourceRecord[], options: ScreenOptions): Promise<ScreenRun> {
@@ -18,6 +21,7 @@ export async function screenCandidates(sources: SourceRecord[], options: ScreenO
 
   const generatedAt = new Date().toISOString();
   const quant = applySerenityQuantOverlay(candidates, generatedAt);
+  options.onMatched?.(quant.candidates);
   return {
     runId: `screen-${generatedAt.replace(/[:.]/g, "-")}`,
     generatedAt,

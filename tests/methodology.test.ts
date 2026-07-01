@@ -132,6 +132,104 @@ describe("methodology scoring", () => {
     expect(summary).toContain("不得以第一人称扮演 Serenity");
   });
 
+  it("wires per-theme negativeSignals into an active posterior penalty", () => {
+    const optical: AShareStock = {
+      code: "000001",
+      name: "测试光芯片",
+      latestPrice: 10,
+      pctChange: 1,
+      totalMarketCap: 20_000_000_000,
+      floatMarketCap: 10_000_000_000,
+      pe: 35,
+      turnover: 4,
+      mainNetInflow: 1_000_000,
+      industry: "光通信",
+      region: "测试",
+      concept: "CPO 硅光 激光器",
+    };
+    const bearSource: SourceRecord = {
+      id: "P2-CPO-BEAR",
+      title: "CPO 空头观点",
+      tier: "P2",
+      sourceType: "social",
+      publisher: "X",
+      observedAt: "2026-06-01",
+      summary: "有观点认为 CPO 面临客户自研和价格战风险，且铜互连延寿。",
+      evidenceTags: ["CPO", "客户自研", "价格战"],
+    };
+
+    const clean = scoreCandidate(optical, []);
+    const bear = scoreCandidate(optical, [bearSource]);
+
+    const cleanPenalty = clean.trace.components.find((item) => item.name === "negative-signal-penalty");
+    const bearPenalty = bear.trace.components.find((item) => item.name === "negative-signal-penalty");
+    expect(cleanPenalty?.score).toBe(0);
+    expect(bearPenalty).toBeDefined();
+    expect(bearPenalty!.score).toBeLessThan(0);
+    expect(bear.trace.posteriorScore).toBeLessThan(clean.trace.posteriorScore);
+    expect(bear.score).toBeLessThan(clean.score);
+    expect(bear.trace.evidence.some((item) => item.title === "negative-signal-penalty" && item.polarity === "negative")).toBe(true);
+    expect(clean.trace.components[0].name).toBe("industry-trend-primacy");
+  });
+
+  it("adds a capital-cycle supply-side penalty that lowers posterior on capacity-release signals", () => {
+    const optical: AShareStock = {
+      code: "000001",
+      name: "测试光芯片",
+      latestPrice: 10,
+      pctChange: 1,
+      totalMarketCap: 20_000_000_000,
+      floatMarketCap: 10_000_000_000,
+      pe: 35,
+      turnover: 4,
+      mainNetInflow: 1_000_000,
+      industry: "光通信",
+      region: "测试",
+      concept: "CPO 硅光 激光器",
+    };
+    const glut: SourceRecord = {
+      id: "P2-SUPPLY-GLUT",
+      title: "CPO 供给侧观察",
+      tier: "P2",
+      sourceType: "social",
+      publisher: "X",
+      observedAt: "2026-06-01",
+      summary: "行业出现产能过剩和大幅扩产，新进入者涌入，供给释放。",
+      evidenceTags: ["CPO", "产能过剩", "大幅扩产"],
+    };
+
+    const clean = scoreCandidate(optical, []);
+    const withGlut = scoreCandidate(optical, [glut]);
+    const component = withGlut.trace.components.find((item) => item.name === "capital-cycle-supply");
+    expect(component).toBeDefined();
+    expect(component!.score).toBeLessThan(0);
+    expect(clean.trace.components.find((item) => item.name === "capital-cycle-supply")?.score).toBe(0);
+    expect(withGlut.trace.posteriorScore).toBeLessThan(clean.trace.posteriorScore);
+    expect((withGlut.trace.supplyReleaseSignals ?? []).length).toBeGreaterThan(0);
+  });
+
+  it("attaches dated ex-ante kill criteria to every candidate", () => {
+    const optical: AShareStock = {
+      code: "000001",
+      name: "测试光芯片",
+      latestPrice: 10,
+      pctChange: 1,
+      totalMarketCap: 20_000_000_000,
+      floatMarketCap: 10_000_000_000,
+      pe: 35,
+      turnover: 4,
+      mainNetInflow: 1_000_000,
+      industry: "光通信",
+      region: "测试",
+      concept: "CPO 硅光 激光器",
+    };
+    const candidate = scoreCandidate(optical, []);
+    const criteria = candidate.trace.killCriteria ?? [];
+    expect(criteria.length).toBeGreaterThanOrEqual(3);
+    expect(criteria.every((item) => item.dueDate > candidate.generatedAt)).toBe(true);
+    expect(criteria.some((item) => item.category === "supply-release")).toBe(true);
+  });
+
   it("does not let distillation sources satisfy candidate primary evidence", () => {
     const optical: AShareStock = {
       code: "300308",
