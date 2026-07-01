@@ -51,6 +51,7 @@ import {
   buryBelowBar,
   buryDowngraded,
   buryKilled,
+  combinedBaseRate,
   loadGraveyard,
   mergeGraveyard,
   renderGraveyardSummary,
@@ -58,7 +59,7 @@ import {
   summarizeGraveyard,
 } from "./research/graveyard.js";
 import { evidenceHasCandidateP0 } from "./research/evidence.js";
-import { loadResolutions } from "./research/resolution.js";
+import { buildResolutionCalibration, loadResolutions, renderResolutionCalibration } from "./research/resolution.js";
 import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "./types.js";
 
 async function ingestSerenity() {
@@ -571,6 +572,23 @@ async function calibration() {
   console.log(renderCalibrationSnapshot(snapshot));
 }
 
+async function resolutionsReport(): Promise<string> {
+  const resolutions = await loadResolutions();
+  return renderResolutionCalibration(buildResolutionCalibration(resolutions));
+}
+
+async function graveyardReport(): Promise<string> {
+  const resolutions = await loadResolutions();
+  const graveyard = attachGraveyardOutcomes(await loadGraveyard(), resolutions);
+  const summary = summarizeGraveyard(graveyard);
+  const combined = combinedBaseRate(resolutions, graveyard);
+  const survivorship =
+    combined.hitRate == null
+      ? "无已兑现结果，暂无法计算命中率（先跑 resolution 回填 forward alpha）。"
+      : `幸存者命中率 ${(combined.survivorsOnlyHitRate ?? 0).toFixed(2)} vs 全样本(含墓地) ${combined.hitRate.toFixed(2)}（n=${combined.n}）— 差值即幸存者偏差膨胀。`;
+  return `${renderGraveyardSummary(summary)}\n${survivorship}`;
+}
+
 async function evals() {
   const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -834,6 +852,10 @@ async function feishuServer() {
         await writeCalibrationSnapshot(snapshot);
         return renderCalibrationSnapshot(snapshot);
       }
+      case "/resolutions":
+        return resolutionsReport();
+      case "/graveyard":
+        return graveyardReport();
       case "/evals": {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -989,6 +1011,12 @@ async function main() {
       break;
     case "calibration":
       await calibration();
+      break;
+    case "resolutions":
+      console.log(await resolutionsReport());
+      break;
+    case "graveyard":
+      console.log(await graveyardReport());
       break;
     case "evals":
       await evals();

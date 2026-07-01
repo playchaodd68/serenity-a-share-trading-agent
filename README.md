@@ -40,6 +40,8 @@ npm run review
 - `npm run research:refresh`: refresh sources, screen report, watchlist, calibration, answer-safety evals, and doctor artifacts.
 - `npm run watchlist`: print the current persistent research watchlist.
 - `npm run calibration`: rebuild the latest calibration snapshot from historical screen reports.
+- `npm run resolutions`: render the realized-outcome calibration report (Brier/log/ECE, overconfidence gap) from `runs/resolutions.json`.
+- `npm run graveyard`: render the graveyard summary (passed-over / killed / downgraded theses) and the survivors-only vs combined hit rate.
 - `npm run evals`: run deterministic high-risk trading-answer safety evals.
 - `npm run reports:convert`: scan FFD downloader output, convert reports to Markdown, and write staging artifacts.
 - `npm run reports:review`: list staged/accepted FFD report manifests, extracted summaries, and quality-gate results.
@@ -113,6 +115,8 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/archive-obsidian`: manually refresh the Obsidian knowledgebase
 - `/watchlist`
 - `/calibration`
+- `/resolutions`
+- `/graveyard`
 - `/evals`
 - `/latest`
 - `/why <code>`
