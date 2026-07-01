@@ -87,4 +87,15 @@ describe("Serenity quant backtest", () => {
     expect(report).toContain("Average rank IC");
     expect(report).toContain("不作为拥挤降权");
   });
+
+  it("attaches a multiple-testing overfitting guard only when trials are supplied", () => {
+    const withoutTrials = runQuantBacktest(snapshots, options);
+    expect(withoutTrials.overfitting).toBeUndefined();
+
+    const withTrials = runQuantBacktest(snapshots, { ...options, trials: 200 });
+    expect(withTrials.overfitting).toBeDefined();
+    expect(withTrials.overfitting!.numTrials).toBe(200);
+    expect(typeof withTrials.overfitting!.passes).toBe("boolean");
+    expect(renderQuantBacktestReport(withTrials)).toContain("Overfitting guard");
+  });
 });
