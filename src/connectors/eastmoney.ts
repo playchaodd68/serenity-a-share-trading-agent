@@ -8,20 +8,40 @@ import { FALLBACK_A_SHARE_FIXTURE } from "./a-share-fixture.js";
 
 const execFileAsync = promisify(execFile);
 
+// Suspended (停牌) rows return "-" strings in numeric fields; tolerate any scalar and
+// normalize in mapEastmoneyStock so one dirty row cannot invalidate a whole page.
+const dirtyNumber = z.union([z.number(), z.string(), z.null()]).optional();
+const dirtyString = z.union([z.string(), z.number(), z.null()]).optional();
+
 const EastmoneyRow = z.object({
-  f2: z.number().nullable().optional(),
-  f3: z.number().nullable().optional(),
-  f9: z.number().nullable().optional(),
+  f2: dirtyNumber,
+  f3: dirtyNumber,
+  f9: dirtyNumber,
   f12: z.string(),
   f14: z.string(),
-  f20: z.number().nullable().optional(),
-  f21: z.number().nullable().optional(),
-  f23: z.number().nullable().optional(),
-  f62: z.number().nullable().optional(),
-  f100: z.string().nullable().optional(),
-  f102: z.string().nullable().optional(),
-  f103: z.string().nullable().optional(),
+  f20: dirtyNumber,
+  f21: dirtyNumber,
+  f23: dirtyNumber,
+  f62: dirtyNumber,
+  f100: dirtyString,
+  f102: dirtyString,
+  f103: dirtyString,
 });
+
+function asFiniteNumber(value: number | string | null | undefined): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function asText(value: string | number | null | undefined): string {
+  if (typeof value === "string") return value === "-" ? "" : value;
+  if (typeof value === "number") return String(value);
+  return "";
+}
 
 const EastmoneyResponse = z.object({
   rc: z.number(),
@@ -55,25 +75,35 @@ export function mapEastmoneyStock(row: z.infer<typeof EastmoneyRow>): AShareStoc
   return {
     code: row.f12,
     name: row.f14,
-    latestPrice: row.f2 ?? null,
-    pctChange: row.f3 ?? null,
-    totalMarketCap: row.f20 ?? null,
-    floatMarketCap: row.f21 ?? null,
-    pe: row.f9 ?? null,
-    turnover: row.f23 ?? null,
-    mainNetInflow: row.f62 ?? null,
-    industry: row.f100 ?? "",
-    region: row.f102 ?? "",
-    concept: row.f103 ?? "",
+    latestPrice: asFiniteNumber(row.f2),
+    pctChange: asFiniteNumber(row.f3),
+    totalMarketCap: asFiniteNumber(row.f20),
+    floatMarketCap: asFiniteNumber(row.f21),
+    pe: asFiniteNumber(row.f9),
+    turnover: asFiniteNumber(row.f23),
+    mainNetInflow: asFiniteNumber(row.f62),
+    industry: asText(row.f100),
+    region: asText(row.f102),
+    concept: asText(row.f103),
   };
 }
 
-export async function fetchAShareSnapshot(limit = 800): Promise<AShareStock[]> {
-  const pageSize = Math.min(Math.max(limit, 1), 5000);
+// Eastmoney caps the clist endpoint at ~100 rows per page regardless of pz, so full
+// coverage requires real pagination. A single-page fetch silently shrinks the blind
+// channel's scan universe to the top of the sort — exactly the kind of hidden coverage
+// gap the methodology forbids.
+const EASTMONEY_PAGE_SIZE = 100;
+const EASTMONEY_MAX_PAGES = 200;
+// push2 is the realtime host; push2delay serves ~15-min delayed quotes and is a
+// sufficient fallback for daily screening when push2 is unreachable (e.g. local
+// proxy/fake-ip DNS interception dropping the primary host).
+const SNAPSHOT_HOSTS = ["push2.eastmoney.com", "push2delay.eastmoney.com"];
+
+function snapshotUrl(host: string, page: number): string {
   const fields = "f12,f14,f2,f3,f20,f21,f9,f23,f62,f100,f102,f103";
   const params = new URLSearchParams({
-    pn: "1",
-    pz: String(pageSize),
+    pn: String(page),
+    pz: String(EASTMONEY_PAGE_SIZE),
     po: "1",
     np: "1",
     ut: "bd1d9ddb04089700cf9c27f6f7426281",
@@ -83,10 +113,64 @@ export async function fetchAShareSnapshot(limit = 800): Promise<AShareStock[]> {
     fs: "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
     fields,
   });
-  const url = `https://push2.eastmoney.com/api/qt/clist/get?${params.toString()}`;
+  return `https://${host}/api/qt/clist/get?${params.toString()}`;
+}
+
+async function fetchSnapshotPage(page: number): Promise<SnapshotPage> {
+  let lastError: unknown;
+  for (const host of SNAPSHOT_HOSTS) {
+    try {
+      const parsed = EastmoneyResponse.parse(await fetchEastmoneyJson(snapshotUrl(host, page)));
+      return { total: parsed.data.total, stocks: parsed.data.diff.map(mapEastmoneyStock) };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+export interface SnapshotPage {
+  total: number;
+  stocks: AShareStock[];
+}
+
+// Exposed for deterministic tests: paginates via the injected page fetcher until the
+// requested limit or the reported universe size is reached, deduping by code. A failure
+// on the first page throws (no live data at all); a failure on a later page keeps the
+// partial coverage already fetched and warns instead of discarding it.
+export async function collectSnapshotPages(
+  fetchPage: (page: number) => Promise<SnapshotPage>,
+  limit: number,
+): Promise<AShareStock[]> {
+  const seen = new Map<string, AShareStock>();
+  let reportedTotal = Number.POSITIVE_INFINITY;
+  for (let page = 1; page <= EASTMONEY_MAX_PAGES; page += 1) {
+    if (seen.size >= limit || seen.size >= reportedTotal) break;
+    let result: SnapshotPage;
+    try {
+      result = await fetchPage(page);
+    } catch (error) {
+      if (page === 1) throw error;
+      console.warn(
+        `Eastmoney pagination stopped at page ${page} with ${seen.size} rows; continuing with partial coverage. Reason: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      break;
+    }
+    reportedTotal = result.total;
+    if (result.stocks.length === 0) break;
+    for (const stock of result.stocks) {
+      if (!seen.has(stock.code)) seen.set(stock.code, stock);
+    }
+  }
+  return [...seen.values()].slice(0, limit);
+}
+
+export async function fetchAShareSnapshot(limit = 800): Promise<AShareStock[]> {
+  const cappedLimit = Math.min(Math.max(limit, 1), 10_000);
   try {
-    const parsed = EastmoneyResponse.parse(await fetchEastmoneyJson(url));
-    return parsed.data.diff.map(mapEastmoneyStock);
+    const stocks = await collectSnapshotPages(fetchSnapshotPage, cappedLimit);
+    if (stocks.length === 0) throw new Error("Eastmoney snapshot returned no rows.");
+    return stocks;
   } catch (error) {
     if (process.env.A_SHARE_DISABLE_FIXTURE === "true") throw error;
     console.warn(`Eastmoney live snapshot unavailable; using fallback fixture with kline refresh. Reason: ${error instanceof Error ? error.message : String(error)}`);
