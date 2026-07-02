@@ -15,6 +15,7 @@ import { initializeKnowledgebase, syncKnowledgebaseSources } from "./rag/obsidia
 import { screenCandidates } from "./screener.js";
 import { loadSourceRegistry, mergeSources, saveSourceRegistry, seedSourceRegistry } from "./sources/registry.js";
 import { EASTMONEY_SOURCE } from "./connectors/eastmoney.js";
+import { fetchLimitUpLadder, formatLadderReport, normalizeLadderDate } from "./connectors/limit-up-ladder.js";
 import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuChatText, sendFeishuMarkdown, sendFeishuOpenIdText, sendFeishuTextByReceiveId } from "./feishu/feishu.js";
@@ -447,6 +448,14 @@ async function rejectFfdReportCommand(reportId: string): Promise<string> {
     reportId: manifest.id,
   });
   return `Rejected ${manifest.id}`;
+}
+
+// 涨停池/连板梯队:交易侧拥挤度观察数据(连板高度/涨停潮是负面拥挤信号),只输出确定性数据,不做评分。
+async function limitUpLadderCommand(input: string): Promise<string> {
+  const trimmed = input.trim();
+  const date = trimmed ? normalizeLadderDate(trimmed) : undefined;
+  if (trimmed && !date) return "Usage: /ladder [YYYYMMDD]";
+  return formatLadderReport(await fetchLimitUpLadder(date));
 }
 
 function shouldRouteDirectlyToFfd(text: string): boolean {
@@ -1038,6 +1047,9 @@ async function feishuServer() {
       }
       case "/portfolio-review":
         return portfolioReview();
+      case "/ladder":
+      case "/连板":
+        return limitUpLadderCommand(arg);
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -1274,6 +1286,8 @@ async function feishuServer() {
         return (await runBearForCode(arg.trim())).text;
       },
       "/portfolio-review": () => portfolioReview(),
+      "/ladder": (arg: string) => limitUpLadderCommand(arg),
+      "/连板": (arg: string) => limitUpLadderCommand(arg),
       "/evals": async () => {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -1350,6 +1364,9 @@ async function main() {
     case "graveyard":
       console.log(await graveyardReport());
       break;
+    case "ladder":
+      console.log(await limitUpLadderCommand(process.argv[3] ?? ""));
+      break;
     case "evals":
       await evals();
       break;
@@ -1420,7 +1437,7 @@ async function main() {
       console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
       process.exitCode = 1;
   }
 }
