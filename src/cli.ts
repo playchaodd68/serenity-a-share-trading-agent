@@ -1344,6 +1344,10 @@ async function feishuServer() {
         return (await runBearForCode(arg.trim())).text;
       },
       "/portfolio-review": () => portfolioReview(),
+      "/library": async (arg: string) => {
+        if (!arg.trim()) return "Usage: /library <关键词> — 检索本地已入库研报";
+        return renderHybridResults(arg.trim(), await hybridSearchReportLibrary(arg.trim()));
+      },
       "/evals": async () => {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
