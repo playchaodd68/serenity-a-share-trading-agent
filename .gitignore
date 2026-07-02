@@ -24,3 +24,14 @@ data/watchlist.json
 data/cninfo/
 data/evidence/
 data/graphs/
+
+# local runtime / tooling artifacts (never commit)
+.DS_Store
+.env.bak*
+.agents/
+.claude/
+.codex-tmp/
+.pi/
+_real.mts
+skills-lock.json
+runs/

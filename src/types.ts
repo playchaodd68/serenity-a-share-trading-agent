@@ -248,6 +248,10 @@ export interface Candidate {
   generatedAt: string;
 }
 
+// Legacy quant-overlay types: the overlay engine was removed by user decision
+// (2026-07-02, uncalibrated composite scores interfered with judgment). These types
+// remain only so historical run artifacts and the offline backtest/history-adapter
+// tools keep parsing; new ScreenRuns no longer populate them.
 export type QuantIndustryTier = "A" | "B" | "C" | "Reject";
 export type QuantCandidateBucket = "core" | "watchlist" | "observe" | "reject";
 export type QuantEvidenceGate = "pass" | "watchlist" | "fail";

@@ -1,6 +1,5 @@
 import { fetchAShareSnapshot } from "./connectors/eastmoney.js";
 import { scoreCandidate } from "./methodology.js";
-import { applySerenityQuantOverlay } from "./quant/scoring.js";
 import { applyBearCaseGate, type BearCaseRecord } from "./research/debate/bear-case.js";
 import { annotateGraveyardRecall } from "./research/graveyard.js";
 import { computeHotThemeDowngrades } from "./research/theme-heat.js";
@@ -30,17 +29,18 @@ export async function screenCandidates(sources: SourceRecord[], options: ScreenO
   const candidates = annotateGraveyardRecall(scored, options.graveyard ?? []);
 
   const generatedAt = new Date().toISOString();
-  const quant = applySerenityQuantOverlay(candidates, generatedAt);
-  options.onMatched?.(quant.candidates);
+  // Quant overlay removed by user decision (2026-07-02): uncalibrated composite
+  // scores/buckets interfered with judgment. Ranking is the methodology evidence
+  // score only; discipline loops (graveyard/calibration/bear gate) stay intact.
+  options.onMatched?.(candidates);
   return {
     runId: `screen-${generatedAt.replace(/[:.]/g, "-")}`,
     generatedAt,
-    candidates: quant.candidates.slice(0, options.topN),
+    candidates: candidates.slice(0, options.topN),
     totalStocksScanned: stocks.length,
     sourceCount: sources.length,
-    quantSummary: quant.summary,
     // Computed over the full matched set (pre-topN) so the downgrade slot reflects
     // the whole scanned theme universe, not just the survivors.
-    hotThemeDowngrades: computeHotThemeDowngrades(quant.candidates),
+    hotThemeDowngrades: computeHotThemeDowngrades(candidates),
   };
 }

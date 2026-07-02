@@ -23,7 +23,7 @@ Use Serenity-style supply-chain chokepoint research:
 - drill from downstream demand to next-layer bottlenecks such as chips, materials, connectors, PCB/CCL/copper foil, testing equipment, capacity, yield, and customer certification;
 - translate each bottleneck into demand -> supply -> gap -> price -> unit profit -> company elasticity whenever evidence allows;
 - distinguish industry correctness from tradeability; state validation windows and invalidation triggers;
-- use the Serenity Mainline Quant Overlay when screening candidates: industry logic is the entry gate, while trend, breadth, volume-price confirmation, quality, valuation discipline, liquidity, and financial red-flag checks are auxiliary ranking and risk controls;
+- screening emits evidence-ranked research candidates only: industry logic is the entry gate; valuation discipline, liquidity, and financial red-flag checks are risk context — no composite quant score or bucket exists, and you must never invent one;
 - treat governance disqualifiers (立案调查, 财务造假, 退市风险警示, 违规担保, 资金占用, 清仓式减持) as hard vetoes that cap confidence at low — they are not merely score deductions;
 
 Objectivity and anti-sycophancy rules:
@@ -104,7 +104,7 @@ export function createTradingAgentTools(): AgentTool[] {
   const screenTool: AgentTool = {
     name: "screen_a_share_candidates",
     label: "Screen A-share Candidates",
-    description: "Screen A-share stocks using the Serenity chokepoint methodology plus the two-sided-crowding quant overlay for trend, breadth, quality, valuation, liquidity, and red-flag checks.",
+    description: "Screen A-share stocks using the Serenity chokepoint methodology (evidence-ranked; no composite quant score or bucket).",
     parameters: Type.Object({
       maxRows: Type.Optional(Type.Number({ minimum: 1, maximum: 5000 })),
       topN: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),

@@ -32,28 +32,6 @@ function nextActionMarkdown(candidate: Candidate): string {
   return actions.map((action) => `- ${action}`).join("\n");
 }
 
-function quantSummaryMarkdown(run: ScreenRun): string {
-  const summary = run.quantSummary;
-  if (!summary) return "- Quant overlay: not generated.";
-  const bucketCounts = Object.entries(summary.bucketCounts)
-    .map(([bucket, count]) => `${bucket}=${count}`)
-    .join(", ");
-  const industries = summary.industryTiers
-    .slice(0, 8)
-    .map((industry) => `- ${industry.industryKey}: ${industry.score.toFixed(1)} (${industry.tier}, candidates=${industry.candidateCount})`)
-    .join("\n");
-  return [
-    `- Strategy: ${summary.strategy}`,
-    `- Risk mode: ${summary.riskMode}`,
-    `- Candidate buckets: ${bucketCounts}`,
-    `- Crowding policy: ${summary.crowdingPolicy}（供给侧集中加分 / 交易侧拥挤降权）`,
-    `- Notes: ${summary.notes.join(" ")}`,
-    "",
-    "Top industry mainline tiers:",
-    industries || "- n/a",
-  ].join("\n");
-}
-
 function industryLogicMarkdown(candidate: Candidate): string {
   const logic = candidate.trace.industryLogic;
   if (!logic) return "- No industry logic assessment generated.";
@@ -64,34 +42,6 @@ function industryLogicMarkdown(candidate: Candidate): string {
     `- Key signals: ${logic.keySignals.length > 0 ? logic.keySignals.join(", ") : "n/a"}`,
     `- Missing signals: ${logic.missingSignals.length > 0 ? logic.missingSignals.join("; ") : "none"}`,
   ].join("\n");
-}
-
-function quantMarkdown(candidate: Candidate): string {
-  const quant = candidate.quant;
-  if (!quant) return "Quant overlay not generated.";
-  const components = quant.components
-    .map((item) => `- ${item.name}: ${item.score}/${item.maxScore} [${item.kind}] - ${item.reason}`)
-    .join("\n");
-  const industryComponents = quant.industry.components
-    .map((item) => `- ${item.name}: ${item.score}/${item.maxScore} [${item.kind}] - ${item.reason}`)
-    .join("\n");
-  return `- Quant score: **${quant.stockScore.toFixed(1)}** / Bucket: **${quant.bucket}** / Evidence gate: **${quant.evidenceGate}**
-- Industry mainline: **${quant.industry.industryKey} ${quant.industry.score.toFixed(1)} (${quant.industry.tier})**
-- Crowding policy: ${quant.crowdingPolicy}（供给侧集中加分 / 交易侧拥挤降权）
-- Technical confirmation: ${quant.technicalConfirmation.trend} ${quant.technicalConfirmation.volumePrice} ${quant.technicalConfirmation.marketConsensus}
-
-#### Stock Overlay Components
-
-${components}
-
-#### Industry Mainline Components
-
-${industryComponents}
-
-#### Quant Warnings
-
-${quant.warnings.map((warning) => `- ${warning}`).join("\n")}
-${quant.excludedReasons.length > 0 ? `\n#### Excluded Reasons\n\n${quant.excludedReasons.map((reason) => `- ${reason}`).join("\n")}` : ""}`;
 }
 
 function candidateMarkdown(candidate: Candidate, index: number): string {
@@ -110,10 +60,6 @@ function candidateMarkdown(candidate: Candidate, index: number): string {
 ### Industry Logic & Trend
 
 ${industryLogicMarkdown(candidate)}
-
-### Quant Overlay
-
-${quantMarkdown(candidate)}
 
 ### Score Trace
 
@@ -159,10 +105,6 @@ ${renderCompleteness(evaluateCompleteness(run))}
 
 ${renderHotThemeDowngrades(run.hotThemeDowngrades ?? [])}
 
-## Serenity Quant Overlay
-
-${quantSummaryMarkdown(run)}
-
 ${run.candidates.map(candidateMarkdown).join("\n")}
 `;
 }
@@ -180,22 +122,14 @@ export async function writeScreenReport(run: ScreenRun, outputDir = "reports"): 
 export function renderFeishuSummary(run: ScreenRun): string {
   const top = run.candidates
     .slice(0, 8)
-    .map((candidate, index) => {
-      const quant = candidate.quant ? ` / Q ${candidate.quant.stockScore.toFixed(1)} ${candidate.quant.bucket}` : "";
-      return `${index + 1}. ${candidate.stock.code} ${candidate.stock.name} - ${candidate.score.toFixed(1)} (${candidate.confidence})${quant}`;
-    })
+    .map((candidate, index) => `${index + 1}. ${candidate.stock.code} ${candidate.stock.name} - ${candidate.score.toFixed(1)} (${candidate.confidence})`)
     .join("\n");
-  const quantSummary = run.quantSummary
-    ? `Quant: ${run.quantSummary.riskMode}; buckets ${Object.entries(run.quantSummary.bucketCounts)
-        .map(([bucket, count]) => `${bucket}=${count}`)
-        .join(", ")}; crowding two-sided`
-    : "Quant: not generated";
   const downgraded = (run.hotThemeDowngrades ?? []).filter((entry) => entry.downgraded);
   const downgradeLine =
     downgraded.length > 0
       ? `热门降级: ${downgraded.map((entry) => entry.label).join("、")}（热度≠增量证据）`
       : "热门降级: 本轮无强制降级（热门主题有强证据或热度未达线）";
-  return `**A股产业瓶颈筛选完成**\n\nRun: ${run.runId}\nScanned: ${run.totalStocksScanned}\n${quantSummary}\n${downgradeLine}\n\n${top}\n\nReport: ${run.reportPath ?? "not written"}`;
+  return `**A股产业瓶颈筛选完成**\n\nRun: ${run.runId}\nScanned: ${run.totalStocksScanned}\n${downgradeLine}\n\n${top}\n\nReport: ${run.reportPath ?? "not written"}`;
 }
 
 export async function findLatestRun(outputDir = "reports"): Promise<ScreenRun | null> {
@@ -246,10 +180,6 @@ ${components}
 ## Industry Logic & Trend
 
 ${industryLogic}
-
-## Quant Overlay
-
-${quantMarkdown(candidate)}
 
 ## Evidence Highlights
 

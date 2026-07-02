@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { assessHypeRisk, scoreCandidate } from "../src/methodology.js";
-import { applySerenityQuantOverlay } from "../src/quant/scoring.js";
 import { evaluateKillCriteria } from "../src/research/kill-criteria.js";
 import { combinedBaseRate } from "../src/research/graveyard.js";
 import {
@@ -100,26 +99,6 @@ describe("hot-theme heat threshold is pinned at 5", () => {
     const entriesBelow = computeHotThemeDowngrades([below]);
     expect(entriesAt[0].downgraded).toBe(true);
     expect(entriesBelow[0].downgraded).toBe(false);
-  });
-});
-
-describe("disqualifier caps the quant bucket, not only confidence", () => {
-  it("a vetoed candidate with strong P0+P1 evidence can never present as core", () => {
-    const p0 = source({
-      id: "P0-BAD",
-      tier: "P0",
-      sourceType: "primary",
-      observedAt: "2026-06-20",
-      summary: "公司公告：实际控制人被证监会立案调查；同时披露 CPO 产能与订单",
-      evidenceTags: ["688100", "测试光芯片", "candidate-direct"],
-    });
-    const p1 = source({ id: "P1-OK", tier: "P1", sourceType: "broker_report", summary: "研报覆盖 CPO 扩产 客户导入 认证 放量", evidenceTags: ["688100", "broker-report"] });
-    const candidate = scoreCandidate(stock({ pe: 40 }), [p0, p1]);
-    expect(candidate.trace.disqualifiers?.triggered).toBe(true);
-    const run = applySerenityQuantOverlay([candidate], NOW);
-    const quant = run.candidates[0].quant!;
-    expect(quant.bucket).toBe("reject");
-    expect(quant.excludedReasons.join("\n")).toContain("一票否决");
   });
 });
 

@@ -36,7 +36,7 @@ npm run review
 
 - `npm run ingest:serenity`: seed source registry and capture accessible Serenity public post summaries.
 - `npm run obsidian:init`: manually create or refresh the Obsidian RAG folder and source notes.
-- `npm run screen`: fetch A-share market snapshot, write a candidate report, update watchlist, and persist evidence/graph snapshots.
+- `npm run screen`: fetch the A-share market snapshot (full-market pagination), write an evidence-ranked candidate report (no composite quant score/bucket — removed 2026-07-02), update watchlist, and persist evidence/graph snapshots.
 - `npm run research:refresh`: refresh sources, screen report, watchlist, calibration, answer-safety evals, and doctor artifacts.
 - `npm run watchlist`: print the current persistent research watchlist.
 - `npm run research:bear -- <code>`: run the mandatory adversarial bear-case pass (fresh-context bear researcher: steel-man first, 失效五问, evidence-ID citations) for a candidate in the latest screen run; high confidence is unreachable without a completed bear case.

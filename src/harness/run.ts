@@ -100,8 +100,10 @@ export async function runHarness(): Promise<HarnessResult> {
   checks.push(
     check(
       "two-sided crowding policy active",
-      run.quantSummary?.crowdingPolicy === "two-sided" && TRADING_AGENT_SYSTEM_PROMPT.includes("two-sided") && !TRADING_AGENT_SYSTEM_PROMPT.includes("not as an automatic crowding penalty"),
-      `policy=${run.quantSummary?.crowdingPolicy}`,
+      run.candidates.every((candidate) => candidate.trace.components.some((component) => component.name === "hype-crowding-penalty")) &&
+        TRADING_AGENT_SYSTEM_PROMPT.includes("two-sided") &&
+        !TRADING_AGENT_SYSTEM_PROMPT.includes("not as an automatic crowding penalty"),
+      "methodology hype component + prompt",
     ),
   );
   checks.push(
