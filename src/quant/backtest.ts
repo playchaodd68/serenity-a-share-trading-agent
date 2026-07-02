@@ -3,7 +3,7 @@ import { assessBacktestOverfitting, type OverfittingGuard } from "./overfitting.
 
 export const SERENITY_QUANT_BACKTEST = "Serenity Mainline Quant Backtest" as const;
 
-const NO_CROWDING_BACKTEST_NOTE = "成交集中、机构抱团、换手抬升不作为拥挤降权；回测只因产业证据、趋势破坏、风险排雷或交易不可执行而降权。";
+const TWO_SIDED_CROWDING_BACKTEST_NOTE = "拥挤度双向计价：供给侧集中按证据加分，交易侧拥挤在缺新增强证据时降权；回测同时因产业证据、趋势破坏、风险排雷或交易不可执行而降权。";
 
 export interface QuantBacktestCandidate {
   code: string;
@@ -565,7 +565,7 @@ export function runQuantBacktest(inputSnapshots: QuantBacktestSnapshot[], rawOpt
             `过拟合护栏：trials=${overfitting.numTrials}，Deflated Sharpe=${overfitting.deflatedSharpe.dsr.toFixed(3)}（阈值 ${overfitting.threshold}）→ ${overfitting.passes ? "通过多重检验校正" : "未通过，疑似样本内过拟合"}。传入 options.trials 以启用。`,
           ]
         : ["过拟合护栏：未启用（传入 options.trials>=2 以做 Deflated Sharpe/PBO 多重检验校正）。"]),
-      NO_CROWDING_BACKTEST_NOTE,
+      TWO_SIDED_CROWDING_BACKTEST_NOTE,
     ],
   };
 }

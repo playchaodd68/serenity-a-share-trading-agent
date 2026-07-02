@@ -70,7 +70,7 @@ describe("Serenity quant backtest", () => {
     expect(result.periods[2].selected.map((position) => position.code)).toEqual(["300010", "688010", "300001", "688001"]);
   });
 
-  it("reports factor validity without adding a crowding penalty", () => {
+  it("reports factor validity with the two-sided crowding note", () => {
     const result = runQuantBacktest(snapshots, options);
     const q1 = result.groupReturns.find((group) => group.group === "Q1-high");
     const q5 = result.groupReturns.find((group) => group.group === "Q5-low");
@@ -80,12 +80,12 @@ describe("Serenity quant backtest", () => {
     expect(result.metrics.avgTurnover).toBeGreaterThan(0);
     expect(averageIc).toBeGreaterThan(0.5);
     expect(q1?.averageForwardReturn).toBeGreaterThan(q5?.averageForwardReturn ?? 0);
-    expect(result.notes.join("\n")).toContain("不作为拥挤降权");
+    expect(result.notes.join("\n")).toContain("双向计价");
 
     const report = renderQuantBacktestReport(result);
     expect(report).toContain("Serenity Mainline Quant Backtest");
     expect(report).toContain("Average rank IC");
-    expect(report).toContain("不作为拥挤降权");
+    expect(report).toContain("双向计价");
   });
 
   it("attaches a multiple-testing overfitting guard only when trials are supplied", () => {

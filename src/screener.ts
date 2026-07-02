@@ -1,12 +1,20 @@
 import { fetchAShareSnapshot } from "./connectors/eastmoney.js";
 import { scoreCandidate } from "./methodology.js";
 import { applySerenityQuantOverlay } from "./quant/scoring.js";
-import type { Candidate, ScreenRun, SourceRecord } from "./types.js";
+import { applyBearCaseGate, type BearCaseRecord } from "./research/debate/bear-case.js";
+import { annotateGraveyardRecall } from "./research/graveyard.js";
+import { computeHotThemeDowngrades } from "./research/theme-heat.js";
+import type { Candidate, GraveyardEntry, ScreenRun, SourceRecord } from "./types.js";
 
 export interface ScreenOptions {
   maxRows: number;
   topN: number;
   stocks?: Awaited<ReturnType<typeof fetchAShareSnapshot>>;
+  // Bear-case records keyed by code. High confidence requires a completed pass with an
+  // "intact" verdict; refuted caps at low, weakened at medium, missing/failed blocks high.
+  bearCases?: Record<string, BearCaseRecord>;
+  // Buried theses recalled as adversarial context on similar candidates (N2).
+  graveyard?: GraveyardEntry[];
   // Receives every matched candidate (before the topN cut) so callers can record
   // passed-over theses; not persisted on the ScreenRun.
   onMatched?: (matched: Candidate[]) => void;
@@ -14,10 +22,12 @@ export interface ScreenOptions {
 
 export async function screenCandidates(sources: SourceRecord[], options: ScreenOptions): Promise<ScreenRun> {
   const stocks = options.stocks ?? (await fetchAShareSnapshot(options.maxRows));
-  const candidates: Candidate[] = stocks
-    .map((stock) => scoreCandidate(stock, sources))
+  const bearCases = options.bearCases ?? {};
+  const scored: Candidate[] = stocks
+    .map((stock) => applyBearCaseGate(scoreCandidate(stock, sources), bearCases))
     .filter((candidate) => candidate.matchedThemes.length > 0)
     .sort((a, b) => b.score - a.score);
+  const candidates = annotateGraveyardRecall(scored, options.graveyard ?? []);
 
   const generatedAt = new Date().toISOString();
   const quant = applySerenityQuantOverlay(candidates, generatedAt);
@@ -29,5 +39,8 @@ export async function screenCandidates(sources: SourceRecord[], options: ScreenO
     totalStocksScanned: stocks.length,
     sourceCount: sources.length,
     quantSummary: quant.summary,
+    // Computed over the full matched set (pre-topN) so the downgrade slot reflects
+    // the whole scanned theme universe, not just the survivors.
+    hotThemeDowngrades: computeHotThemeDowngrades(quant.candidates),
   };
 }

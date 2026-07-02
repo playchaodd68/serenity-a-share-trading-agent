@@ -3,6 +3,8 @@ import type { Candidate, ScreenRun } from "./types.js";
 import { ensureDir, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import fs from "node:fs/promises";
 import { summarizeSupplyChainGraph } from "./research/graph.js";
+import { renderHotThemeDowngrades } from "./research/theme-heat.js";
+import { evaluateCompleteness, renderCompleteness } from "./validation/completeness-gate.js";
 
 function evidenceMarkdown(candidate: Candidate): string {
   const evidence = candidate.trace.structuredEvidence ?? [];
@@ -44,7 +46,7 @@ function quantSummaryMarkdown(run: ScreenRun): string {
     `- Strategy: ${summary.strategy}`,
     `- Risk mode: ${summary.riskMode}`,
     `- Candidate buckets: ${bucketCounts}`,
-    `- No crowding penalty: ${summary.noCrowdingPenalty ? "yes" : "no"}`,
+    `- Crowding policy: ${summary.crowdingPolicy}（供给侧集中加分 / 交易侧拥挤降权）`,
     `- Notes: ${summary.notes.join(" ")}`,
     "",
     "Top industry mainline tiers:",
@@ -75,7 +77,7 @@ function quantMarkdown(candidate: Candidate): string {
     .join("\n");
   return `- Quant score: **${quant.stockScore.toFixed(1)}** / Bucket: **${quant.bucket}** / Evidence gate: **${quant.evidenceGate}**
 - Industry mainline: **${quant.industry.industryKey} ${quant.industry.score.toFixed(1)} (${quant.industry.tier})**
-- No crowding penalty: ${quant.noCrowdingPenalty ? "yes" : "no"}
+- Crowding policy: ${quant.crowdingPolicy}（供给侧集中加分 / 交易侧拥挤降权）
 - Technical confirmation: ${quant.technicalConfirmation.trend} ${quant.technicalConfirmation.volumePrice} ${quant.technicalConfirmation.marketConsensus}
 
 #### Stock Overlay Components
@@ -97,7 +99,9 @@ function candidateMarkdown(candidate: Candidate, index: number): string {
   const sourceIds = new Set(candidate.trace.components.flatMap((component) => component.sourceIds));
   return `## ${index + 1}. ${stock.code} ${stock.name}
 
-- Score: **${candidate.score.toFixed(1)}** / Confidence: **${candidate.confidence}**
+- Score: **${candidate.score.toFixed(1)}** / Confidence: **${candidate.confidence}**${
+    (candidate.trace.ceilingReasons?.length ?? 0) > 0 ? `\n- Confidence ceiling: ${candidate.trace.confidenceCeiling}（${candidate.trace.ceilingReasons!.join("；")}）` : ""
+  }
 - Industry: ${stock.industry || "n/a"} / Concept: ${stock.concept || "n/a"}
 - Market cap: ${stock.totalMarketCap == null ? "n/a" : `${(stock.totalMarketCap / 1_000_000_000).toFixed(1)}B CNY`}
 - Matched themes: ${candidate.matchedThemes.map((theme) => `${theme.label} (${theme.keywords.join(", ")})`).join("; ")}
@@ -147,6 +151,14 @@ export function renderScreenReport(run: ScreenRun): string {
 
 > 本报告是研究候选清单，不构成投资建议或自动交易指令。高置信度需要 P0 主来源和独立交叉验证。
 
+## 研究完成度
+
+${renderCompleteness(evaluateCompleteness(run))}
+
+## 热门降级（强制输出槽）
+
+${renderHotThemeDowngrades(run.hotThemeDowngrades ?? [])}
+
 ## Serenity Quant Overlay
 
 ${quantSummaryMarkdown(run)}
@@ -176,9 +188,14 @@ export function renderFeishuSummary(run: ScreenRun): string {
   const quantSummary = run.quantSummary
     ? `Quant: ${run.quantSummary.riskMode}; buckets ${Object.entries(run.quantSummary.bucketCounts)
         .map(([bucket, count]) => `${bucket}=${count}`)
-        .join(", ")}; no crowding penalty`
+        .join(", ")}; crowding two-sided`
     : "Quant: not generated";
-  return `**A股产业瓶颈筛选完成**\n\nRun: ${run.runId}\nScanned: ${run.totalStocksScanned}\n${quantSummary}\n\n${top}\n\nReport: ${run.reportPath ?? "not written"}`;
+  const downgraded = (run.hotThemeDowngrades ?? []).filter((entry) => entry.downgraded);
+  const downgradeLine =
+    downgraded.length > 0
+      ? `热门降级: ${downgraded.map((entry) => entry.label).join("、")}（热度≠增量证据）`
+      : "热门降级: 本轮无强制降级（热门主题有强证据或热度未达线）";
+  return `**A股产业瓶颈筛选完成**\n\nRun: ${run.runId}\nScanned: ${run.totalStocksScanned}\n${quantSummary}\n${downgradeLine}\n\n${top}\n\nReport: ${run.reportPath ?? "not written"}`;
 }
 
 export async function findLatestRun(outputDir = "reports"): Promise<ScreenRun | null> {

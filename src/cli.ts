@@ -20,7 +20,23 @@ import { createTradingChatSession, promptTradingChatSession, runInteractiveChat,
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
-import { renderAnswerSafetyEvals, runAnswerSafetyEvals } from "./research/evals.js";
+import {
+  bearKillCriteria,
+  loadBearCases,
+  renderBearCase,
+  runBearCasePass,
+  saveBearCase,
+} from "./research/debate/bear-case.js";
+import { renderVerdict, synthesizeVerdict } from "./research/debate/verdict.js";
+import { createDeepSeekClient } from "./research/debate/llm-client.js";
+import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
+import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
+import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
+import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
+import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
+import { DEFAULT_THEMES } from "./methodology.js";
+import { evaluateCompleteness, renderCompleteness } from "./validation/completeness-gate.js";
+import { renderAnswerSafetyEvals, renderSycophancyEvals, runAnswerSafetyEvals, runSycophancyPromptEvals } from "./research/evals.js";
 import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
 import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
 import { organizeFfdObsidianKnowledgebase, renderFfdObsidianOrganizationRun } from "./research/ffd-obsidian-organizer.js";
@@ -59,7 +75,8 @@ import {
   summarizeGraveyard,
 } from "./research/graveyard.js";
 import { evidenceHasCandidateP0 } from "./research/evidence.js";
-import { buildResolutionCalibration, loadResolutions, renderResolutionCalibration } from "./research/resolution.js";
+import { buildResolutionCalibration, loadResolutions, renderResolutionCalibration, resolveCandidates, saveResolutions } from "./research/resolution.js";
+import { buildResolutionInputsFromWatchlist, createFfdPriceReturnProvider } from "./research/resolution-provider.js";
 import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "./types.js";
 
 async function ingestSerenity() {
@@ -456,7 +473,9 @@ async function runScreenPipeline(sendNotification = true) {
   const collectMatched = (candidates: Candidate[]) => {
     matched = candidates;
   };
-  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, onMatched: collectMatched });
+  const bearCases = await loadBearCases();
+  const graveyardContext = await loadGraveyard();
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
   if (cninfo.warnings.length > 0) {
     for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
@@ -467,13 +486,16 @@ async function runScreenPipeline(sendNotification = true) {
   }
   const run =
     cninfo.sources.length > 0
-      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, onMatched: collectMatched })
+      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched })
       : preliminaryRun;
   const completed = await writeScreenReport(run);
   const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
   await saveWatchlist(watchlist);
   const graveyard = await updateGraveyard(completed, watchlist, matched);
   const graveyardSummary = summarizeGraveyard(graveyard);
+  const decisionLog = await loadDecisionLog();
+  const pendingDecisions = pendingEntriesFromRun(completed, decisionLog);
+  if (pendingDecisions.length > 0) await saveDecisionLog([...decisionLog, ...pendingDecisions]);
   const artifacts = await writeResearchArtifacts(completed, watchlist);
   await appendJsonl("runs/screen.jsonl", {
     type: "screen",
@@ -521,6 +543,10 @@ async function researchRefresh() {
   await writeCalibrationSnapshot(calibration);
   const evals = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/answer-safety-evals-latest.json", evals);
+  const sycophancyEvals = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancyEvals);
+  const completeness = evaluateCompleteness(run);
+  await writeJsonFile("runs/completeness-latest.json", completeness);
   const doctorReport = await diagnoseRuntime();
   await writeJsonFile(`runs/doctor-${run.runId}.json`, doctorReport);
   await appendJsonl("runs/research-refresh.jsonl", {
@@ -533,14 +559,96 @@ async function researchRefresh() {
     calibration: { reportsAnalyzed: calibration.reportsAnalyzed, candidatesAnalyzed: calibration.candidatesAnalyzed },
     evalsPassed: evals.filter((item) => item.passed).length,
     evalsTotal: evals.length,
+    sycophancyPassed: sycophancyEvals.filter((item) => item.passed).length,
+    sycophancyTotal: sycophancyEvals.length,
     doctorOk: doctorReport.ok,
   });
   console.log(`Research refresh completed: ${run.runId}`);
   console.log(`Watchlist entries: ${watchlist.length}`);
   console.log(renderCalibrationSnapshot(calibration));
   console.log(renderAnswerSafetyEvals(evals));
+  console.log(renderSycophancyEvals(sycophancyEvals));
+  console.log(renderCompleteness(completeness));
   console.log(renderDoctorReport(doctorReport));
-  if (!doctorReport.ok || evals.some((item) => !item.passed)) process.exitCode = 1;
+  if (!doctorReport.ok || evals.some((item) => !item.passed) || sycophancyEvals.some((item) => !item.passed)) process.exitCode = 1;
+}
+
+
+async function runBearForCode(query: string): Promise<{ text: string; ok: boolean }> {
+  const latest = await findLatestRun();
+  if (!latest) return { text: "No screen run found. Run `npm run screen` first.", ok: false };
+  const candidate = latest.candidates.find((item) => item.stock.code === query || item.stock.name.includes(query));
+  if (!candidate) return { text: `Candidate ${query} not found in latest run ${latest.runId}.`, ok: false };
+  const client = createDeepSeekClient();
+  const record = await runBearCasePass(candidate, client, { runId: latest.runId });
+  await saveBearCase(record);
+  const verdict = synthesizeVerdict(candidate, record.report);
+  const lines = [renderBearCase(record), "", renderVerdict(verdict)];
+  if (record.report != null) {
+    const watchlist = await loadWatchlist();
+    const entry = watchlist.find((item) => item.code === candidate.stock.code);
+    if (entry) {
+      const extra = bearKillCriteria(record, record.generatedAt);
+      const existingIds = new Set((entry.killCriteria ?? []).map((item) => item.id));
+      const merged = [...(entry.killCriteria ?? []), ...extra.filter((item) => !existingIds.has(item.id))];
+      const updated = watchlist.map((item) => (item.code === entry.code ? { ...item, killCriteria: merged } : item));
+      await saveWatchlist(updated);
+      lines.push("", `Registered ${extra.filter((item) => !existingIds.has(item.id)).length} bear-derived kill criteria on watchlist entry ${entry.code}.`);
+    }
+  }
+  return { text: lines.join("\n"), ok: record.status === "completed" };
+}
+
+async function researchBear(codeArg?: string) {
+  const code = (codeArg ?? process.argv[3] ?? "").trim();
+  if (!code) {
+    console.error("Usage: npm run research:bear -- <stock code>");
+    process.exitCode = 1;
+    return;
+  }
+  const result = await runBearForCode(code);
+  console.log(result.text);
+  if (!result.ok) process.exitCode = 1;
+}
+
+async function portfolioReview(): Promise<string> {
+  const { portfolio, errors } = await loadPortfolio();
+  if (!portfolio) {
+    return [`持仓文件校验失败（${PORTFOLIO_PATH}）：`, ...errors.map((error) => `- ${error}`)].join("\n");
+  }
+  const [latestRun, watchlist, bearCases, graveyard] = await Promise.all([
+    findLatestRun(),
+    loadWatchlist(),
+    loadBearCases(),
+    loadGraveyard(),
+  ]);
+  const report = buildPositionOverlay({ portfolio, latestRun, watchlist, bearCases, graveyard });
+  await writeJsonFile("runs/position-overlay-latest.json", report);
+  return renderPositionOverlay(report);
+}
+
+
+async function resolutionsUpdate() {
+  const watchlist = await loadWatchlist();
+  const now = new Date().toISOString();
+  const inputs = buildResolutionInputsFromWatchlist(watchlist, now);
+  if (inputs.length === 0) {
+    console.log("No watchlist entries have completed their resolution horizon yet.");
+    return;
+  }
+  const existing = await loadResolutions();
+  const resolvedCodes = new Set(existing.map((item) => `${item.code}:${item.entryDate.slice(0, 10)}`));
+  const dueInputs = inputs.filter((input) => !resolvedCodes.has(`${input.code}:${input.entryDate.slice(0, 10)}`));
+  if (dueInputs.length === 0) {
+    console.log(`All ${inputs.length} due entries already resolved.`);
+    return;
+  }
+  console.log(`Resolving ${dueInputs.length} due theses via FFD quote history...`);
+  const fresh = await resolveCandidates(dueInputs, createFfdPriceReturnProvider(), { now });
+  const merged = [...existing, ...fresh];
+  await saveResolutions(merged);
+  console.log(`Resolved ${fresh.length}/${dueInputs.length} (skipped entries stay unresolved; no fabricated data).`);
+  console.log(`Total resolutions on ledger: ${merged.length}. Run npm run calibration to refresh Brier/slices.`);
 }
 
 async function harness() {
@@ -566,10 +674,44 @@ async function showWatchlist() {
   console.log(renderWatchlistSummary(await loadWatchlist()));
 }
 
+async function sycophancySliceReport(): Promise<string | null> {
+  const { portfolio } = await loadPortfolio();
+  if (!portfolio || portfolio.positions.length === 0) return null;
+  const resolutions = await loadResolutions();
+  const report = computeSycophancySlices(resolutions, new Set(portfolio.positions.map((position) => position.code)));
+  await writeJsonFile("runs/sycophancy-slice-latest.json", report);
+  return renderSycophancySlices(report);
+}
+
 async function calibration() {
   const snapshot = await buildCalibrationSnapshot();
   await writeCalibrationSnapshot(snapshot);
   console.log(renderCalibrationSnapshot(snapshot));
+  const resolutions = await loadResolutions();
+  const decisionLog = await loadDecisionLog();
+  const { entries, resolvedCount } = resolveDecisionEntries(decisionLog, resolutions);
+  if (resolvedCount > 0) await saveDecisionLog(entries);
+  const decisionSummary = summarizeDecisionLog(entries);
+  console.log(
+    `Decision log: total=${decisionSummary.total} pending=${decisionSummary.pending} resolved=${decisionSummary.resolved}` +
+      (decisionSummary.validatedRate != null ? ` validated-rate=${(decisionSummary.validatedRate * 100).toFixed(1)}%` : ""),
+  );
+  const slice = await sycophancySliceReport();
+  if (slice) console.log(`\n${slice}`);
+  const graveyardEntries = await loadGraveyard();
+  let arms: ThemeArmState[] = initialArms(DEFAULT_THEMES.map((theme) => theme.id));
+  const themeLabelToId = new Map(DEFAULT_THEMES.map((theme) => [theme.label, theme.id]));
+  for (const entry of graveyardEntries) {
+    if (entry.outcomeLabel !== "validated" && entry.outcomeLabel !== "falsified") continue;
+    for (const label of entry.matchedThemes) {
+      const themeId = themeLabelToId.get(label);
+      if (themeId) arms = updateArm(arms, themeId, entry.outcomeLabel === "validated" ? 1 : 0);
+    }
+  }
+  const rng = createRng(resolutions.length * 7919 + graveyardEntries.length + 1);
+  const suggested = pickNextTheme(arms, rng);
+  const suggestedLabel = DEFAULT_THEMES.find((theme) => theme.id === suggested)?.label ?? suggested;
+  console.log(`研究预算建议（Thompson 采样，防主题自选择）：下一轮优先复核主题「${suggestedLabel}」；冷门主题保有探索保底概率。`);
 }
 
 async function resolutionsReport(): Promise<string> {
@@ -592,8 +734,11 @@ async function graveyardReport(): Promise<string> {
 async function evals() {
   const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/answer-safety-evals-latest.json", results);
+  const sycophancy = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancy);
   console.log(renderAnswerSafetyEvals(results));
-  if (results.some((item) => !item.passed)) process.exitCode = 1;
+  console.log(renderSycophancyEvals(sycophancy));
+  if (results.some((item) => !item.passed) || sycophancy.some((item) => !item.passed)) process.exitCode = 1;
 }
 
 function renderQuantBacktestInputHelp(inputPath: string): string {
@@ -850,7 +995,8 @@ async function feishuServer() {
       case "/calibration": {
         const snapshot = await buildCalibrationSnapshot();
         await writeCalibrationSnapshot(snapshot);
-        return renderCalibrationSnapshot(snapshot);
+        const slice = await sycophancySliceReport();
+        return slice ? [renderCalibrationSnapshot(snapshot), "", slice].join("\n") : renderCalibrationSnapshot(snapshot);
       }
       case "/resolutions":
         return resolutionsReport();
@@ -859,7 +1005,9 @@ async function feishuServer() {
       case "/evals": {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
-        return renderAnswerSafetyEvals(results);
+        const sycophancy = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+        await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancy);
+        return [renderAnswerSafetyEvals(results), renderSycophancyEvals(sycophancy)].join("\n\n");
       }
       case "/quant-adapt-history":
         return quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []);
@@ -883,6 +1031,12 @@ async function feishuServer() {
         if (!arg.trim()) return "Usage: /why <code-or-name>";
         return explainCandidate(run, arg);
       }
+      case "/bear": {
+        if (!arg.trim()) return "Usage: /bear <code-or-name>";
+        return (await runBearForCode(arg.trim())).text;
+      }
+      case "/portfolio-review":
+        return portfolioReview();
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -1005,6 +1159,15 @@ async function main() {
       break;
     case "research-refresh":
       await researchRefresh();
+      break;
+    case "research-bear":
+      await researchBear();
+      break;
+    case "portfolio-review":
+      console.log(await portfolioReview());
+      break;
+    case "resolutions-update":
+      await resolutionsUpdate();
       break;
     case "watchlist":
       await showWatchlist();

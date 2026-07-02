@@ -528,7 +528,7 @@ export function renderQuantHistoryAdapterReport(result: QuantHistoryAdapterResul
     `Snapshots: ${result.coverage.snapshotsBuilt}`,
     `Candidates with returns: ${result.coverage.candidatesWithForwardReturn}/${result.coverage.candidatesSeen}`,
     `Horizon bars: ${result.options.horizonBars}; entry lag bars: ${result.options.entryLagBars}`,
-    "No crowding penalty is introduced by the adapter; crowding is not a data field in the generated snapshots.",
+    "Two-sided crowding policy: the adapter introduces no crowding data field; crowding is priced only in the scoring layer.",
     result.warnings.length > 0 ? `Warnings:\n${result.warnings.slice(0, 20).map((warning) => `- ${warning}`).join("\n")}` : undefined,
   ]
     .filter((line): line is string => line != null)

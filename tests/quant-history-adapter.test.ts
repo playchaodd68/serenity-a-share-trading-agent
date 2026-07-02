@@ -50,7 +50,7 @@ function candidate(input: { code: string; name: string; industry: string; score:
             technicalConfirmation: { trend: "", volumePrice: "", liquidity: "", marketConsensus: "" },
             warnings: [],
             excludedReasons: [],
-            noCrowdingPenalty: true,
+            crowdingPolicy: "two-sided",
           },
     generatedAt: "2026-01-02T15:30:00.000Z",
   };
@@ -118,6 +118,6 @@ describe("quant history adapter", () => {
 
     const inputFile = buildQuantBacktestInputFile(result);
     expect(inputFile.options.periodsPerYear).toBe(126);
-    expect(renderQuantHistoryAdapterReport(result)).toContain("No crowding penalty");
+    expect(renderQuantHistoryAdapterReport(result)).toContain("Two-sided crowding policy");
   });
 });

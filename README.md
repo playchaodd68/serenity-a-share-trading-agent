@@ -39,10 +39,13 @@ npm run review
 - `npm run screen`: fetch A-share market snapshot, write a candidate report, update watchlist, and persist evidence/graph snapshots.
 - `npm run research:refresh`: refresh sources, screen report, watchlist, calibration, answer-safety evals, and doctor artifacts.
 - `npm run watchlist`: print the current persistent research watchlist.
-- `npm run calibration`: rebuild the latest calibration snapshot from historical screen reports.
+- `npm run research:bear -- <code>`: run the mandatory adversarial bear-case pass (fresh-context bear researcher: steel-man first, 失效五问, evidence-ID citations) for a candidate in the latest screen run; high confidence is unreachable without a completed bear case.
+- `npm run portfolio:review`: read-only position overlay — maps blind-channel conclusions (screen run, watchlist, bear cases, graveyard, kill criteria) onto `data/portfolio.json` as exposure/concentration/conflicts. Holdings never flow back into scoring (position firewall; see `data/portfolio.example.json`).
+- `npm run resolutions:update`: resolve due watchlist theses against realized stock/benchmark returns via FFD quote history and append them to `runs/resolutions.json` (the write side of the Brier fulfillment loop; entries with missing data are skipped explicitly, never fabricated).
 - `npm run resolutions`: render the realized-outcome calibration report (Brier/log/ECE, overconfidence gap) from `runs/resolutions.json`.
 - `npm run graveyard`: render the graveyard summary (passed-over / killed / downgraded theses) and the survivors-only vs combined hit rate.
-- `npm run evals`: run deterministic high-risk trading-answer safety evals.
+- `npm run calibration`: rebuild the latest calibration snapshot, resolve decision-log entries, print the sycophancy slice (portfolio-related vs unrelated optimism/hit-rate gap) and the Thompson-sampling research-direction suggestion.
+- `npm run evals`: run deterministic answer-safety evals plus sycophancy prompt evals (holdings-not-evidence, no-flip-under-pushback, two-sided crowding, forced hot-theme downgrade, etc.).
 - `npm run reports:convert`: scan FFD downloader output, convert reports to Markdown, and write staging artifacts.
 - `npm run reports:review`: list staged/accepted FFD report manifests, extracted summaries, and quality-gate results.
 - `npm run reports:accept -- <report-id>`: accept one quality-gate-passing staged FFD report into the source registry as P1 broker evidence.
@@ -114,6 +117,8 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/reports-reject <id>`
 - `/archive-obsidian`: manually refresh the Obsidian knowledgebase
 - `/watchlist`
+- `/bear <code>`: run the adversarial bear-case pass for a candidate
+- `/portfolio-review`: read-only holdings overlay (never feeds back into scoring)
 - `/calibration`
 - `/resolutions`
 - `/graveyard`
