@@ -22,6 +22,7 @@ import { type FfdReportStatus, listFfdReportManifests } from "../research/report
 import { buildResolutionCalibration, loadResolutions } from "../research/resolution.js";
 import { loadWatchlist } from "../research/watchlist.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
+import { createPanelAuth } from "./auth.js";
 import type {
   CalibrationSnapshot,
   GraveyardEntry,
@@ -47,6 +48,8 @@ export interface PanelServerOptions {
   rootDir?: string;
   /** Static assets directory; defaults to <rootDir>/panel/dist. */
   staticDir?: string;
+  /** 面板密码（测试注入用）；默认读 PANEL_PASSWORD，缺省则面板完全开放。 */
+  password?: string;
   /** Injectable ladder fetcher for tests; defaults to fetchLimitUpLadder. */
   fetchLadder?: (date?: string) => Promise<LimitUpLadderSnapshot>;
   /** Injectable clock for "today" decisions; defaults to () => new Date(). */
@@ -401,6 +404,16 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
   const fetchLadder = options.fetchLadder ?? fetchLimitUpLadder;
   const now = options.now ?? (() => new Date());
   const port = options.port ?? config.chatPort;
+
+  // 密码优先取测试注入的 options.password，默认读环境变量（dotenv 已在 config.ts 加载）。
+  const auth = await createPanelAuth({
+    password: options.password ?? process.env.PANEL_PASSWORD,
+    sessionsPath: path.join(rootDir, "runs", "panel-sessions.json"),
+    now,
+  });
+  if (!auth.required) {
+    console.warn("[panel] 未配置 PANEL_PASSWORD，面板处于完全开放状态；如需密码保护请在 .env 中设置。");
+  }
 
   const sessions = new Map<string, TradingChatSession>();
   let ladderMemo: { key: string; at: number; snapshot: LimitUpLadderSnapshot } | null = null;

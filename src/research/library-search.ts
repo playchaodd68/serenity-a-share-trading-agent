@@ -24,6 +24,9 @@ export interface LibraryDocument {
   sourceTier: "P1";
   requiresP0Verification: boolean;
   tokenEstimate: number;
+  // Absolute paths for deep links: the Obsidian note (preferred) and the raw file.
+  notePath?: string;
+  rawPath?: string;
 }
 
 export interface LibrarySearchResult {
@@ -102,6 +105,9 @@ function toDocuments(manifest: FfdReportManifest, chunks: FfdReportChunk[]): Lib
       sourceTier: "P1" as const,
       requiresP0Verification: chunk.requiresP0Verification ?? true,
       tokenEstimate: chunk.tokenEstimate,
+      notePath: (manifest as { obsidianAcceptedPath?: string; obsidianStagingPath?: string }).obsidianAcceptedPath ??
+        (manifest as { obsidianStagingPath?: string }).obsidianStagingPath,
+      rawPath: manifest.rawPath,
     }));
 }
 

@@ -75,6 +75,9 @@ describe("panel server", () => {
   let ladderFetchCount = 0;
 
   beforeAll(async () => {
+    // 本机 .env 可能配置了真实 PANEL_PASSWORD（dotenv 已在 config.ts 加载）；
+    // 删除它保证"未配置密码→完全开放"回归用例的确定性，密码一律走 options 注入。
+    delete process.env.PANEL_PASSWORD;
     emptyRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-empty-"));
     emptyServer = await startPanelServer({
       port: 0,
@@ -411,6 +414,231 @@ describe("panel server", () => {
       expect(body.ok).toBe(true);
       expect(body.modelProvider).toBeDefined();
       expect(body.sessions).toBe(0);
+    });
+  });
+});
+
+describe("panel server authentication", () => {
+  const PASSWORD = "panel-test-secret";
+  const FIXED_NOW = () => new Date(`${TODAY}T05:00:00.000Z`);
+
+  let authRoot: string;
+  let authServer: http.Server;
+  let authBase: string;
+
+  async function startAuthServer(rootDir: string, password?: string): Promise<http.Server> {
+    return startPanelServer({
+      port: 0,
+      rootDir,
+      password,
+      fetchLadder: async () => {
+        throw new Error("network disabled in tests");
+      },
+      now: FIXED_NOW,
+    });
+  }
+
+  function baseOf(server: http.Server): string {
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
+
+  async function login(base: string, password: string, headers: Record<string, string> = {}): Promise<Response> {
+    return fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ password }),
+    });
+  }
+
+  function sessionCookie(response: Response): string {
+    const setCookie = response.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("serenity_panel_session=");
+    return setCookie.split(";")[0]!;
+  }
+
+  beforeAll(async () => {
+    delete process.env.PANEL_PASSWORD;
+    authRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-auth-"));
+    await fs.mkdir(path.join(authRoot, "panel", "dist"), { recursive: true });
+    await fs.writeFile(path.join(authRoot, "panel", "dist", "index.html"), "<!doctype html><title>panel</title>");
+    authServer = await startAuthServer(authRoot, PASSWORD);
+    authBase = baseOf(authServer);
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => authServer.close(resolve));
+    await fs.rm(authRoot, { recursive: true, force: true });
+  });
+
+  describe("no password configured (regression: stays fully open)", () => {
+    let openRoot: string;
+    let openServer: http.Server;
+    let openBase: string;
+
+    beforeAll(async () => {
+      openRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-open-"));
+      openServer = await startAuthServer(openRoot, undefined);
+      openBase = baseOf(openServer);
+    });
+
+    afterAll(async () => {
+      await new Promise((resolve) => openServer.close(resolve));
+      await fs.rm(openRoot, { recursive: true, force: true });
+    });
+
+    it("GET /api/overview stays open without a cookie", async () => {
+      const response = await fetch(`${openBase}/api/overview`);
+      expect(response.status).toBe(200);
+    });
+
+    it("GET /api/auth/status reports required=false, authenticated=true", async () => {
+      const response = await fetch(`${openBase}/api/auth/status`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ required: false, authenticated: true });
+    });
+  });
+
+  describe("with password configured", () => {
+    it("returns 401 unauthorized on /api/overview without a cookie", async () => {
+      const response = await fetch(`${authBase}/api/overview`);
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "unauthorized" });
+    });
+
+    it("protects /api/health (data freshness leaks)", async () => {
+      const response = await fetch(`${authBase}/api/health`);
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 401 on POST /chat without a cookie", async () => {
+      const response = await fetch(`${authBase}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "hi" }),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 401 on POST /reset without a cookie", async () => {
+      const response = await fetch(`${authBase}/reset`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("keeps the SPA shell open at /", async () => {
+      const response = await fetch(`${authBase}/`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+    });
+
+    it("keeps the bare /health open", async () => {
+      const response = await fetch(`${authBase}/health`);
+      expect(response.status).toBe(200);
+      expect((await response.json()).ok).toBe(true);
+    });
+
+    it("GET /api/auth/status is open and reports unauthenticated", async () => {
+      const response = await fetch(`${authBase}/api/auth/status`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ required: true, authenticated: false });
+    });
+
+    it("rejects a wrong password with 401", async () => {
+      const response = await login(authBase, "wrong-password");
+      expect(response.status).toBe(401);
+      expect(response.headers.get("set-cookie")).toBeNull();
+    });
+
+    it("rejects a made-up session cookie", async () => {
+      const response = await fetch(`${authBase}/api/overview`, {
+        headers: { cookie: `serenity_panel_session=${"f".repeat(64)}` },
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("logs in with the correct password and unlocks /api/overview", async () => {
+      const response = await login(authBase, PASSWORD);
+      expect(response.status).toBe(200);
+      const setCookie = response.headers.get("set-cookie")!;
+      expect(setCookie).toContain("HttpOnly");
+      expect(setCookie).toContain("SameSite=Lax");
+      expect(setCookie).toContain("Path=/");
+      expect(setCookie).toContain("Max-Age=2592000");
+      // CORS 全开 + cookie 是参考项目的原始漏洞：绝不允许带凭据的跨源放行。
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+
+      const cookie = sessionCookie(response);
+      const overview = await fetch(`${authBase}/api/overview`, { headers: { cookie } });
+      expect(overview.status).toBe(200);
+
+      const status = await fetch(`${authBase}/api/auth/status`, { headers: { cookie } });
+      expect(await status.json()).toEqual({ required: true, authenticated: true });
+    });
+
+    it("stores only the sha256 of the token in runs/panel-sessions.json", async () => {
+      const response = await login(authBase, PASSWORD);
+      const cookie = sessionCookie(response);
+      const token = cookie.split("=")[1]!;
+      const raw = await fs.readFile(path.join(authRoot, "runs", "panel-sessions.json"), "utf8");
+      expect(raw).not.toContain(token);
+    });
+
+    it("invalidates the cookie after logout", async () => {
+      const cookie = sessionCookie(await login(authBase, PASSWORD));
+      const logout = await fetch(`${authBase}/api/auth/logout`, { method: "POST", headers: { cookie } });
+      expect(logout.status).toBe(200);
+      expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+      const after = await fetch(`${authBase}/api/overview`, { headers: { cookie } });
+      expect(after.status).toBe(401);
+    });
+
+    it("keeps old sessions valid across a server restart (persistence)", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "panel-restart-"));
+      const first = await startAuthServer(root, PASSWORD);
+      const cookie = sessionCookie(await login(baseOf(first), PASSWORD));
+      await new Promise((resolve) => first.close(resolve));
+
+      const second = await startAuthServer(root, PASSWORD);
+      try {
+        const response = await fetch(`${baseOf(second)}/api/overview`, { headers: { cookie } });
+        expect(response.status).toBe(200);
+      } finally {
+        await new Promise((resolve) => second.close(resolve));
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("login rate limiting (by socket address, X-Forwarded-For must not matter)", () => {
+    let rateRoot: string;
+    let rateServer: http.Server;
+    let rateBase: string;
+
+    beforeAll(async () => {
+      rateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-rate-"));
+      rateServer = await startAuthServer(rateRoot, PASSWORD);
+      rateBase = baseOf(rateServer);
+    });
+
+    afterAll(async () => {
+      await new Promise((resolve) => rateServer.close(resolve));
+      await fs.rm(rateRoot, { recursive: true, force: true });
+    });
+
+    it("locks after 5 failures and returns 429 even for the correct password", async () => {
+      // 每次失败都伪造不同的 X-Forwarded-For：若限速被 XFF 分流（参考项目的坑），
+      // 计数就永远到不了 5，下面的 429 断言会失败。
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const response = await login(rateBase, "wrong-password", {
+          "x-forwarded-for": `10.0.0.${attempt + 1}`,
+        });
+        expect(response.status).toBe(401);
+      }
+      const locked = await login(rateBase, PASSWORD, { "x-forwarded-for": "10.0.0.99" });
+      expect(locked.status).toBe(429);
     });
   });
 });

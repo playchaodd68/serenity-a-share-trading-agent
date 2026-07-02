@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { FALLBACK_A_SHARE_FIXTURE } from "./a-share-fixture.js";
+import { writeJsonFile } from "../utils/fs.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -170,6 +171,14 @@ export async function fetchAShareSnapshot(limit = 800): Promise<AShareStock[]> {
   try {
     const stocks = await collectSnapshotPages(fetchSnapshotPage, cappedLimit);
     if (stocks.length === 0) throw new Error("Eastmoney snapshot returned no rows.");
+    // Persist the code/name universe as the entity dictionary for report claim
+    // extraction (best-effort; only on broad fetches so a tiny page never shrinks it).
+    if (stocks.length >= 1000) {
+      writeJsonFile(
+        path.resolve("data/a-share-universe.json"),
+        stocks.map((stock) => ({ code: stock.code, name: stock.name })),
+      ).catch(() => undefined);
+    }
     return stocks;
   } catch (error) {
     if (process.env.A_SHARE_DISABLE_FIXTURE === "true") throw error;

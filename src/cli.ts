@@ -49,6 +49,8 @@ import { hybridSearchReportLibrary, renderHybridResults } from "./research/libra
 import { buildEmbeddingIndex } from "./research/library-index.js";
 import { isOllamaAvailable, resolveEmbeddingRuntime } from "./research/embeddings.js";
 import { loadRetrievalEvalCases, renderRetrievalEval, runRetrievalEval } from "./research/library-eval.js";
+import { buildClaimsEntityIndex, lookupCompanyClaims, summarizeClaimsIndex } from "./research/claims-index.js";
+import { generateCompanyDossiers, renderCompanyClaims, renderDossierRun } from "./research/dossier.js";
 import { rechunkFfdReports, renderFfdRechunkRun } from "./research/report-library.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
 import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
@@ -440,6 +442,11 @@ async function acceptQualityFfdReportsCommand(): Promise<string> {
   await saveSourceRegistry(merged);
   await syncKnowledgebaseSources(merged);
   await refreshLibraryEmbeddingsBestEffort("accept-quality");
+  try {
+    console.log(renderDossierRun(await generateCompanyDossiers()));
+  } catch (error) {
+    console.warn(`dossier refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   await appendJsonl("runs/ffd-report-library.jsonl", {
     type: "accept-quality",
     at: new Date().toISOString(),
@@ -753,6 +760,20 @@ async function libraryEvalCommand() {
   const rendered = renderRetrievalEval(summaries);
   await writeJsonFile("runs/library-retrieval-eval-latest.json", summaries);
   console.log(rendered);
+}
+
+
+async function companyClaimsCommand(queryArg?: string) {
+  const query = (queryArg ?? process.argv.slice(3).join(" ")).trim();
+  if (!query) {
+    console.error("Usage: npm run library:company -- <公司名或简称>");
+    process.exitCode = 1;
+    return;
+  }
+  const index = await buildClaimsEntityIndex();
+  console.log(renderCompanyClaims(query, lookupCompanyClaims(index, query)));
+  const summary = summarizeClaimsIndex(index);
+  console.log(`\n(实体索引:${summary.companyCount} 家公司 / ${summary.claimCount} 条论断)`);
 }
 
 async function harness() {
@@ -1123,6 +1144,11 @@ async function feishuServer() {
         if (!arg.trim()) return "Usage: /library <关键词> — 检索本地已入库研报";
         return renderHybridResults(arg.trim(), await hybridSearchReportLibrary(arg.trim()));
       }
+      case "/company": {
+        if (!arg.trim()) return "Usage: /company <公司名> — 查看该公司的研报论断档案";
+        const claimsIndex = await buildClaimsEntityIndex();
+        return renderCompanyClaims(arg.trim(), lookupCompanyClaims(claimsIndex, arg.trim()));
+      }
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -1365,6 +1391,11 @@ async function feishuServer() {
         if (!arg.trim()) return "Usage: /library <关键词> — 检索本地已入库研报";
         return renderHybridResults(arg.trim(), await hybridSearchReportLibrary(arg.trim()));
       },
+      "/company": async (arg: string) => {
+        if (!arg.trim()) return "Usage: /company <公司名> — 查看该公司的研报论断档案";
+        const index = await buildClaimsEntityIndex();
+        return renderCompanyClaims(arg.trim(), lookupCompanyClaims(index, arg.trim()));
+      },
       "/evals": async () => {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -1438,6 +1469,9 @@ async function main() {
     case "library-eval":
       await libraryEvalCommand();
       break;
+    case "library-company":
+      await companyClaimsCommand();
+      break;
     case "reports-rechunk":
       console.log(renderFfdRechunkRun(await rechunkFfdReports()));
       break;
@@ -1482,6 +1516,7 @@ async function main() {
       break;
     case "reports-organize-obsidian":
       console.log(await organizeFfdObsidianCommand());
+      console.log(renderDossierRun(await generateCompanyDossiers()));
       break;
     case "ffd-set-key":
       console.log(await setFfdApiKeyCommand());

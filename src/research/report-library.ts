@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -331,9 +332,29 @@ function includesTerm(text: string, term: string): boolean {
   return compactForMatch(text).includes(compactForMatch(term));
 }
 
+// Company recognition = built-in term list + the real A-share universe dictionary
+// (data/a-share-universe.json, refreshed by every screen run). Names shorter than
+// 3 chars are excluded from the dictionary path to avoid false positives.
+let cachedUniverseNames: string[] | null = null;
+function universeCompanyNames(): string[] {
+  if (cachedUniverseNames) return cachedUniverseNames;
+  try {
+    const raw = readFileSync(path.resolve("data/a-share-universe.json"), "utf8");
+    const rows = JSON.parse(raw) as Array<{ name?: string }>;
+    cachedUniverseNames = rows
+      .map((row) => (row.name ?? "").trim())
+      .filter((name) => name.length >= 3 && !/ST|退/.test(name));
+  } catch {
+    cachedUniverseNames = [];
+  }
+  return cachedUniverseNames;
+}
+
 function inferCompanies(...values: string[]): string[] {
   const text = values.filter(Boolean).join(" ");
-  return REPORT_COMPANY_TERMS.filter((company) => includesTerm(text, company));
+  const builtin = REPORT_COMPANY_TERMS.filter((company) => includesTerm(text, company));
+  const universe = universeCompanyNames().filter((name) => text.includes(name));
+  return [...new Set([...builtin, ...universe])];
 }
 
 function inferTopicsFromText(text: string, quality?: FfdAutoDownloadEvaluation): string[] {
@@ -1000,8 +1021,14 @@ function chunkSection(section: FfdReportSection, tags: string[], startIndex: num
   return chunks;
 }
 
-function chunkMarkdown(markdown: string, tags: string[], sections?: FfdReportSection[]): FfdReportChunk[] {
-  const sourceSections = sections && sections.length > 0
+// Strip a leading YAML frontmatter block so metadata never becomes chunk/claim #1.
+function stripFrontmatter(markdown: string): string {
+  return markdown.replace(/^\s*---\n[\s\S]*?\n---\s*\n/, "");
+}
+
+function chunkMarkdown(rawMarkdown: string, tags: string[], sections?: FfdReportSection[]): FfdReportChunk[] {
+  const markdown = stripFrontmatter(rawMarkdown);
+  const sourceSections = sections && sections.length > 0 && !/^\s*---\n/.test(rawMarkdown)
     ? sections
     : extractReportSections(markdown, tags);
   const chunks: FfdReportChunk[] = [];

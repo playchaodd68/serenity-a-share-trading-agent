@@ -1,4 +1,5 @@
 import { resolveEmbeddingRuntime, type EmbeddingClient } from "./embeddings.js";
+import { obsidianUriForPath } from "./obsidian-link.js";
 import { fuseRrf, loadEmbeddingIndex, vectorSearch, type EmbeddingIndexFile } from "./library-index.js";
 import {
   getLibrarySearchIndex,
@@ -130,6 +131,9 @@ export function renderHybridResults(query: string, output: HybridSearchOutput): 
         `   机构：${doc.institution ?? "未知"}；日期：${doc.publishedAt ?? "未知"}；段落：${doc.sectionTitle ?? "全文"}；score ${result.score}`,
         `   ${excerpt}${doc.text.length > 160 ? "…" : ""}`,
       );
+      const noteUri = doc.notePath ? obsidianUriForPath(doc.notePath) : null;
+      if (noteUri) lines.push(`   打开笔记：${noteUri}`);
+      if (doc.rawPath) lines.push(`   原始文件：${doc.rawPath}`);
     });
   }
   return lines.join("\n");

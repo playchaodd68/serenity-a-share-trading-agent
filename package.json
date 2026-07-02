@@ -19,6 +19,7 @@
     "reports:rechunk": "tsx src/cli.ts reports-rechunk",
     "library:embed": "tsx src/cli.ts library-embed",
     "library:eval": "tsx src/cli.ts library-eval",
+    "library:company": "tsx src/cli.ts library-company",
     "watchlist": "tsx src/cli.ts watchlist",
     "calibration": "tsx src/cli.ts calibration",
     "resolutions": "tsx src/cli.ts resolutions",
