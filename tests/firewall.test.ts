@@ -29,11 +29,17 @@ describe("position firewall (module-graph boundary)", () => {
       files.push(...(await collectTsFiles(dir)));
     }
     const offenders: string[] = [];
+    const FORBIDDEN = [
+      /from\s+["'][^"']*portfolio\/portfolio(\.js)?["']/, // static import
+      /import\s*\(\s*["'][^"']*portfolio/, // dynamic import
+      /portfolio\.json/, // raw file access bypassing the module
+      /data\/portfolio/, // path-based access
+    ];
     for (const file of files) {
       const content = await fs.readFile(file, "utf8");
-      if (/from\s+["'][^"']*portfolio\/portfolio(\.js)?["']/.test(content)) offenders.push(file);
+      if (FORBIDDEN.some((pattern) => pattern.test(content))) offenders.push(file);
     }
-    expect(offenders, `盲评通道模块不得 import 持仓数据：${offenders.join(", ")}`).toEqual([]);
+    expect(offenders, `盲评通道模块不得访问持仓数据（含动态 import 与直接读文件）：${offenders.join(", ")}`).toEqual([]);
   });
 
   it("the agent toolset exposes no portfolio/holdings tool", () => {

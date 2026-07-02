@@ -44,5 +44,12 @@
 
 ## 收尾
 - [x] 7.1 README/docs 同步
-- [ ] 7.2 全量 npm run review + code review agent 过一遍
-- [ ] 7.3 提交(分阶段 commit)+ PR
+- [x] 7.2 多维审查(4 维并行 + 逐条对抗验证,24 agent):确认 20 条(去重 16 项)全部修复——
+      bear-falsifier 类别防静默过期、一票否决封 quant 桶、decision-log brier 重算、
+      反身性改为"新增(90天内)强证据"判定、base rate 口径统一、五问去重校验、
+      原子写+损坏恢复、resolutions 生产端(FFD provider + resolutions:update)、
+      Feishu /bear 与 CLI 一致化、agent screen 工具接 bearCases/graveyard、
+      bear gate verdict 感知(refuted→low/weakened→medium)、催化剂消费端、
+      防火墙测试加固(动态 import/直读文件)、overfitting 阈值钉死、
+      反身性阈值/hype 上限/热度线边界测试
+- [x] 7.3 提交(分阶段 commit)+ PR

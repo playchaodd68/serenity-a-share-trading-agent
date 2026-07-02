@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { CandidateResolution, ConfidenceLevel, ScreenRun } from "../types.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
+import { brierScore } from "./resolution.js";
 
 // Append-only decision log (N1): every screened conclusion is registered as a pending
 // entry the moment it ships, then resolved against realized alpha with a short plain-
@@ -90,7 +91,9 @@ export function resolveDecisionEntries(entries: DecisionLogEntry[], resolutions:
       resolvedAt: resolution.resolvedAt,
       realizedAlpha: resolution.realizedAlpha,
       outcomeLabel: resolution.outcomeLabel,
-      brier: resolution.brier,
+      // Recompute against THIS entry's probability — the resolution's own brier was
+      // scored against the resolution's posterior, which may come from another run.
+      brier: brierScore(entry.probability, resolution.outcome),
       reflection: buildReflection(entry, resolution),
     };
   });

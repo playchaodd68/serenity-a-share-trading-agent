@@ -142,15 +142,17 @@ export async function saveWatchlist(entries: WatchlistEntry[], filePath = WATCHL
   await writeJsonFile(filePath, entries);
 }
 
-export function renderWatchlistSummary(entries: WatchlistEntry[]): string {
+export function renderWatchlistSummary(entries: WatchlistEntry[], now = new Date().toISOString()): string {
   if (entries.length === 0) return "Watchlist is empty.";
   return entries
     .slice(0, 20)
-    .map(
-      (entry, index) =>
-        `${index + 1}. ${entry.code} ${entry.name} - ${entry.score.toFixed(1)} ${entry.confidence} ${entry.status} P0=${
-          entry.evidenceState.hasCandidateP0 ? "yes" : "no"
-        } next=${entry.nextReviewAt.slice(0, 10)}`,
-    )
+    .map((entry, index) => {
+      const dueKills = (entry.killCriteria ?? []).filter((criterion) => criterion.dueDate <= now).length;
+      const dueCatalysts = (entry.catalysts ?? []).filter((criterion) => criterion.dueDate <= now).length;
+      const dueText = dueKills + dueCatalysts > 0 ? ` due[kill=${dueKills},cat=${dueCatalysts}]` : "";
+      return `${index + 1}. ${entry.code} ${entry.name} - ${entry.score.toFixed(1)} ${entry.confidence} ${entry.status} P0=${
+        entry.evidenceState.hasCandidateP0 ? "yes" : "no"
+      } next=${entry.nextReviewAt.slice(0, 10)}${dueText}`;
+    })
     .join("\n");
 }

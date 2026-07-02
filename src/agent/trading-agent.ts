@@ -3,6 +3,8 @@ import { getModel, Type, type Model } from "@earendil-works/pi-ai";
 import { getConfig } from "../config.js";
 import { callFfdTool, renderFfdToolResultWithStatus, type FfdAllowedToolName } from "../connectors/ffd.js";
 import { methodologySummary } from "../methodology.js";
+import { loadBearCases } from "../research/debate/bear-case.js";
+import { loadGraveyard } from "../research/graveyard.js";
 import { screenCandidates } from "../screener.js";
 import { loadSourceRegistry } from "../sources/registry.js";
 
@@ -111,9 +113,12 @@ export function createTradingAgentTools(): AgentTool[] {
       const args = params as { maxRows?: number; topN?: number };
       const config = getConfig();
       const sources = await loadSourceRegistry();
+      const [bearCases, graveyard] = await Promise.all([loadBearCases(), loadGraveyard()]);
       const run = await screenCandidates(sources, {
         maxRows: args.maxRows ?? config.aShareMaxRows,
         topN: args.topN ?? config.aShareTopN,
+        bearCases,
+        graveyard,
       });
       return textResult(run, JSON.stringify(run.candidates.slice(0, 5), null, 2));
     },

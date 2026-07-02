@@ -123,6 +123,13 @@ export function evaluateKillCriteria(
       continue;
     }
     if (criterion.category === "negative-signal") {
+      // Bear-derived falsifiers persisted before the "bear-falsifier" category existed
+      // carry a synthetic signal tag that can never appear in activeNegativeSignals;
+      // they are prose falsifiers needing manual review — surface as overdue, never drop.
+      if (criterion.signal?.startsWith("bear-case:")) {
+        overdue.push(criterion);
+        continue;
+      }
       // Match on the discrete originating signal, not the rendered prose trigger.
       const stillActive = criterion.signal != null && state.activeNegativeSignals.includes(criterion.signal);
       if (stillActive) fired.push(criterion);

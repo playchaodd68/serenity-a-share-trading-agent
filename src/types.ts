@@ -208,7 +208,10 @@ export type KillCriterionCategory =
   | "expectation-window"
   | "negative-signal"
   | "supply-release"
-  | "valuation";
+  | "valuation"
+  // Prose falsifiers from the adversarial bear pass: not machine-checkable, so they
+  // must surface as overdue for manual review when due — never silently expire.
+  | "bear-falsifier";
 
 export interface KillCriterion {
   id: string;

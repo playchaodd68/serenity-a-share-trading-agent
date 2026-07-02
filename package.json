@@ -14,6 +14,7 @@
     "research:refresh": "tsx src/cli.ts research-refresh",
     "research:bear": "tsx src/cli.ts research-bear",
     "portfolio:review": "tsx src/cli.ts portfolio-review",
+    "resolutions:update": "tsx src/cli.ts resolutions-update",
     "watchlist": "tsx src/cli.ts watchlist",
     "calibration": "tsx src/cli.ts calibration",
     "evals": "tsx src/cli.ts evals",

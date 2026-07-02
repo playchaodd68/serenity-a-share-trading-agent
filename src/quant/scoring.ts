@@ -292,6 +292,11 @@ function thunderstormPenalty(candidate: Candidate): QuantScoreComponent {
 function excludedReasons(candidate: Candidate): string[] {
   const reasons: string[] = [];
   if (/ST|\*|退/.test(candidate.stock.name)) reasons.push("ST/退市风险标签");
+  // Hard veto parity with the methodology layer: a triggered disqualifier caps not only
+  // confidence but also the reachable bucket — a vetoed name may never present as core.
+  if (candidate.trace.disqualifiers?.triggered) {
+    reasons.push(`一票否决信号：${candidate.trace.disqualifiers.hitSignals.join("；")}`);
+  }
   if (candidate.matchedThemes.length === 0) reasons.push("未匹配产业主线");
   if ((candidate.stock.totalMarketCap ?? 0) > 0 && (candidate.stock.totalMarketCap ?? 0) < 1_000_000_000) reasons.push("市值过小，容量不足");
   return reasons;

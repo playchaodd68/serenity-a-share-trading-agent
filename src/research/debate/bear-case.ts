@@ -56,7 +56,10 @@ export const BearCaseSchema = z.object({
   keyQuestions: z.array(z.string().min(4)).min(1),
   killCriterionCandidates: z.array(killCriterionCandidateSchema),
   verdict: z.enum(["refuted", "weakened", "intact"]),
-});
+}).refine(
+  (report) => new Set(report.failureFindings.map((finding) => finding.questionId)).size === FAILURE_QUESTION_IDS.length,
+  { message: "failureFindings 必须覆盖全部失效五问，且每问只回答一次（禁止用同一问题重复凑数）。" },
+);
 
 export type BearCase = z.infer<typeof BearCaseSchema>;
 
@@ -190,21 +193,41 @@ export function completedBearCaseCodes(records: Record<string, BearCaseRecord>):
   );
 }
 
-const BEAR_GATE_REASON = "反方研究员 pass 未完成，禁止 high 置信度（运行 npm run research:bear -- <code>）。";
+const BEAR_GATE_MISSING_REASON = "反方研究员 pass 未完成，禁止 high 置信度（运行 npm run research:bear -- <code>）。";
+const BEAR_GATE_REFUTED_REASON = "反方裁决 refuted：正方论点被反方证据实质推翻，置信度封顶 low。";
+const BEAR_GATE_WEAKENED_REASON = "反方裁决 weakened：正方论点被削弱，置信度封顶 medium。";
 
-// Screen-time enforcement: high confidence requires a completed bear-case artifact.
-export function applyBearCaseGate(candidate: Candidate, completedCodes: Set<string>): Candidate {
-  if (candidate.confidence !== "high" || completedCodes.has(candidate.stock.code)) return candidate;
+function capCandidate(candidate: Candidate, ceiling: "low" | "medium", reason: string): Candidate {
+  const order = { low: 0, medium: 1, high: 2 } as const;
+  if (order[candidate.confidence] <= order[ceiling]) {
+    // Already at or below the ceiling — still record the reason once for the trace.
+    if (candidate.trace.ceilingReasons?.includes(reason)) return candidate;
+    return { ...candidate, trace: { ...candidate.trace, ceilingReasons: [...(candidate.trace.ceilingReasons ?? []), reason] } };
+  }
   return {
     ...candidate,
-    confidence: "medium",
+    confidence: ceiling,
     trace: {
       ...candidate.trace,
-      confidenceCeiling: "medium",
-      ceilingReasons: [...(candidate.trace.ceilingReasons ?? []), BEAR_GATE_REASON],
-      nextActions: [...new Set([...(candidate.trace.nextActions ?? []), BEAR_GATE_REASON])],
+      confidenceCeiling: ceiling,
+      ceilingReasons: [...(candidate.trace.ceilingReasons ?? []), reason],
+      nextActions: [...new Set([...(candidate.trace.nextActions ?? []), reason])],
     },
   };
+}
+
+// Screen-time enforcement, verdict-aware: high confidence requires a completed bear
+// pass whose verdict is "intact"; "weakened" caps at medium and "refuted" caps at low.
+// A missing/failed pass blocks high (conservative default).
+export function applyBearCaseGate(candidate: Candidate, records: Record<string, BearCaseRecord>): Candidate {
+  const record = records[candidate.stock.code];
+  const report = record?.status === "completed" ? record.report : null;
+  if (report == null) {
+    return candidate.confidence === "high" ? capCandidate(candidate, "medium", BEAR_GATE_MISSING_REASON) : candidate;
+  }
+  if (report.verdict === "refuted") return capCandidate(candidate, "low", BEAR_GATE_REFUTED_REASON);
+  if (report.verdict === "weakened") return capCandidate(candidate, "medium", BEAR_GATE_WEAKENED_REASON);
+  return candidate;
 }
 
 function addDays(iso: string, days: number): string {
@@ -214,11 +237,13 @@ function addDays(iso: string, days: number): string {
 }
 
 // Bear findings feed the existing discipline system instead of creating a second track.
+// Category "bear-falsifier": prose falsifiers needing external confirmation, so
+// evaluateKillCriteria surfaces them as overdue when due — never silently expired.
 export function bearKillCriteria(record: BearCaseRecord, entryDate: string): KillCriterion[] {
   if (record.report == null) return [];
   return record.report.killCriterionCandidates.slice(0, 3).map((item, index) => ({
     id: `kc-bear-${index + 1}`,
-    category: "negative-signal" as const,
+    category: "bear-falsifier" as const,
     trigger: item.trigger,
     dueDate: addDays(entryDate, item.horizonDays),
     sourceCheck: item.sourceCheck,

@@ -410,18 +410,31 @@ export function assessSupplyRelease(
   return { hitTerms, penalty };
 }
 
+const FRESH_STRONG_EVIDENCE_DAYS = 90;
+
+function isFreshStrongSource(source: SourceRecord, now: string): boolean {
+  if (source.tier !== "P0" && source.tier !== "P1") return false;
+  const observed = Date.parse(source.publishedAt ?? source.observedAt);
+  // Unparseable dates count as stale — the conservative direction (reflexivity may fire).
+  if (!Number.isFinite(observed)) return false;
+  return Date.parse(now) - observed <= FRESH_STRONG_EVIDENCE_DAYS * 24 * 60 * 60 * 1000;
+}
+
 export function assessHypeRisk(
   stock: AShareStock,
   sources: SourceRecord[],
   matchedThemes = matchThemes(stock),
+  now = new Date().toISOString(),
 ): HypeRiskAssessment {
   const text = combinedResearchText(stock, sources, matchedThemes);
   const hitSignals = matchingTerms(text, HYPE_RISK_TERMS);
-  const hasStrongSource = sources.some((source) => source.tier === "P0" || source.tier === "P1");
+  // "Backed by strong evidence" must mean NEW strong evidence: a stale P0/P1 in the
+  // registry cannot permanently suppress the reflexivity guard on today's price surge.
+  const hasFreshStrongSource = sources.some((source) => isFreshStrongSource(source, now));
   const reflexivityFlag =
     (stock.pctChange ?? 0) >= REFLEXIVITY_PCT_THRESHOLD &&
     (stock.turnover ?? 0) >= REFLEXIVITY_TURNOVER_THRESHOLD &&
-    !hasStrongSource;
+    !hasFreshStrongSource;
   const penalty = clamp(
     hitSignals.length * HYPE_RISK_UNIT_PENALTY + (reflexivityFlag ? HYPE_RISK_REFLEXIVITY_PENALTY : 0),
     0,

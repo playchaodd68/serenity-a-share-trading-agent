@@ -122,7 +122,10 @@ export interface CombinedBaseRate {
 }
 
 export function combinedBaseRate(resolutions: CandidateResolution[], graveyard: GraveyardEntry[]): CombinedBaseRate {
-  const survivorOutcomes = resolutions.map((resolution) => resolution.outcome);
+  // Same measurement basis for both populations: deadband outcome labels with
+  // inconclusive excluded — mixing sign-based outcomes (survivors) with label-based
+  // outcomes (buried) would skew the combined base rate.
+  const survivorOutcomes = decidedOutcomes(resolutions.map((resolution) => resolution.outcomeLabel));
   const buriedOutcomes = decidedOutcomes(graveyard.map((entry) => entry.outcomeLabel));
   const all = [...survivorOutcomes, ...buriedOutcomes];
   const rate = (values: number[]): number | null => (values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length);

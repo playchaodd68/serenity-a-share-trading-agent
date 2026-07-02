@@ -22,7 +22,6 @@ import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operat
 import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
 import {
   bearKillCriteria,
-  completedBearCaseCodes,
   loadBearCases,
   renderBearCase,
   runBearCasePass,
@@ -75,7 +74,8 @@ import {
   summarizeGraveyard,
 } from "./research/graveyard.js";
 import { evidenceHasCandidateP0 } from "./research/evidence.js";
-import { loadResolutions } from "./research/resolution.js";
+import { loadResolutions, resolveCandidates, saveResolutions } from "./research/resolution.js";
+import { buildResolutionInputsFromWatchlist, createFfdPriceReturnProvider } from "./research/resolution-provider.js";
 import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "./types.js";
 
 async function ingestSerenity() {
@@ -472,7 +472,7 @@ async function runScreenPipeline(sendNotification = true) {
   const collectMatched = (candidates: Candidate[]) => {
     matched = candidates;
   };
-  const bearCases = completedBearCaseCodes(await loadBearCases());
+  const bearCases = await loadBearCases();
   const graveyardContext = await loadGraveyard();
   const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
@@ -573,33 +573,16 @@ async function researchRefresh() {
 }
 
 
-async function researchBear(codeArg?: string) {
-  const code = (codeArg ?? process.argv[3] ?? "").trim();
-  if (!code) {
-    console.error("Usage: npm run research:bear -- <stock code>");
-    process.exitCode = 1;
-    return;
-  }
+async function runBearForCode(query: string): Promise<{ text: string; ok: boolean }> {
   const latest = await findLatestRun();
-  if (!latest) {
-    console.error("No screen run found. Run `npm run screen` first.");
-    process.exitCode = 1;
-    return;
-  }
-  const candidate = latest.candidates.find((item) => item.stock.code === code || item.stock.name.includes(code));
-  if (!candidate) {
-    console.error(`Candidate ${code} not found in latest run ${latest.runId}.`);
-    process.exitCode = 1;
-    return;
-  }
+  if (!latest) return { text: "No screen run found. Run `npm run screen` first.", ok: false };
+  const candidate = latest.candidates.find((item) => item.stock.code === query || item.stock.name.includes(query));
+  if (!candidate) return { text: `Candidate ${query} not found in latest run ${latest.runId}.`, ok: false };
   const client = createDeepSeekClient();
-  console.log(`Running adversarial bear-case pass for ${candidate.stock.code} ${candidate.stock.name} via ${client.label}...`);
   const record = await runBearCasePass(candidate, client, { runId: latest.runId });
   await saveBearCase(record);
-  console.log(renderBearCase(record));
   const verdict = synthesizeVerdict(candidate, record.report);
-  console.log("");
-  console.log(renderVerdict(verdict));
+  const lines = [renderBearCase(record), "", renderVerdict(verdict)];
   if (record.report != null) {
     const watchlist = await loadWatchlist();
     const entry = watchlist.find((item) => item.code === candidate.stock.code);
@@ -609,12 +592,23 @@ async function researchBear(codeArg?: string) {
       const merged = [...(entry.killCriteria ?? []), ...extra.filter((item) => !existingIds.has(item.id))];
       const updated = watchlist.map((item) => (item.code === entry.code ? { ...item, killCriteria: merged } : item));
       await saveWatchlist(updated);
-      console.log(`Registered ${extra.length} bear-derived kill criteria on watchlist entry ${entry.code}.`);
+      lines.push("", `Registered ${extra.filter((item) => !existingIds.has(item.id)).length} bear-derived kill criteria on watchlist entry ${entry.code}.`);
     }
   }
-  if (record.status !== "completed") process.exitCode = 1;
+  return { text: lines.join("\n"), ok: record.status === "completed" };
 }
 
+async function researchBear(codeArg?: string) {
+  const code = (codeArg ?? process.argv[3] ?? "").trim();
+  if (!code) {
+    console.error("Usage: npm run research:bear -- <stock code>");
+    process.exitCode = 1;
+    return;
+  }
+  const result = await runBearForCode(code);
+  console.log(result.text);
+  if (!result.ok) process.exitCode = 1;
+}
 
 async function portfolioReview(): Promise<string> {
   const { portfolio, errors } = await loadPortfolio();
@@ -630,6 +624,30 @@ async function portfolioReview(): Promise<string> {
   const report = buildPositionOverlay({ portfolio, latestRun, watchlist, bearCases, graveyard });
   await writeJsonFile("runs/position-overlay-latest.json", report);
   return renderPositionOverlay(report);
+}
+
+
+async function resolutionsUpdate() {
+  const watchlist = await loadWatchlist();
+  const now = new Date().toISOString();
+  const inputs = buildResolutionInputsFromWatchlist(watchlist, now);
+  if (inputs.length === 0) {
+    console.log("No watchlist entries have completed their resolution horizon yet.");
+    return;
+  }
+  const existing = await loadResolutions();
+  const resolvedCodes = new Set(existing.map((item) => `${item.code}:${item.entryDate.slice(0, 10)}`));
+  const dueInputs = inputs.filter((input) => !resolvedCodes.has(`${input.code}:${input.entryDate.slice(0, 10)}`));
+  if (dueInputs.length === 0) {
+    console.log(`All ${inputs.length} due entries already resolved.`);
+    return;
+  }
+  console.log(`Resolving ${dueInputs.length} due theses via FFD quote history...`);
+  const fresh = await resolveCandidates(dueInputs, createFfdPriceReturnProvider(), { now });
+  const merged = [...existing, ...fresh];
+  await saveResolutions(merged);
+  console.log(`Resolved ${fresh.length}/${dueInputs.length} (skipped entries stay unresolved; no fabricated data).`);
+  console.log(`Total resolutions on ledger: ${merged.length}. Run npm run calibration to refresh Brier/slices.`);
 }
 
 async function harness() {
@@ -992,16 +1010,8 @@ async function feishuServer() {
         return explainCandidate(run, arg);
       }
       case "/bear": {
-        const run = await findLatestRun();
-        if (!run) return "No screen report JSON found under reports/. Run /screen first.";
         if (!arg.trim()) return "Usage: /bear <code-or-name>";
-        const query = arg.trim();
-        const candidate = run.candidates.find((item) => item.stock.code === query || item.stock.name.includes(query));
-        if (!candidate) return `Candidate ${query} not found in latest run ${run.runId}.`;
-        const record = await runBearCasePass(candidate, createDeepSeekClient(), { runId: run.runId });
-        await saveBearCase(record);
-        const verdict = synthesizeVerdict(candidate, record.report);
-        return [renderBearCase(record), "", renderVerdict(verdict)].join("\n");
+        return (await runBearForCode(arg.trim())).text;
       }
       case "/portfolio-review":
         return portfolioReview();
@@ -1133,6 +1143,9 @@ async function main() {
       break;
     case "portfolio-review":
       console.log(await portfolioReview());
+      break;
+    case "resolutions-update":
+      await resolutionsUpdate();
       break;
     case "watchlist":
       await showWatchlist();

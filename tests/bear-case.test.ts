@@ -125,32 +125,66 @@ describe("bear-case parsing and pass", () => {
   });
 });
 
-describe("bear-case gate (high confidence requires the adversarial pass)", () => {
+function record(report: BearCase | null, status: BearCaseRecord["status"] = report ? "completed" : "parse-failed"): Record<string, BearCaseRecord> {
+  return { "688999": { code: "688999", name: "测试硅光", generatedAt: "2026-07-02T00:00:00.000Z", model: "fake/test", status, report } };
+}
+
+describe("bear-case gate (verdict-aware: intact unlocks, weakened caps medium, refuted caps low)", () => {
   it("downgrades high-confidence candidates without a bear case to medium", () => {
     const candidate = scoreCandidate(stock, [p0, p1]);
     expect(candidate.confidence).toBe("high");
-    const gated = applyBearCaseGate(candidate, new Set());
+    const gated = applyBearCaseGate(candidate, {});
     expect(gated.confidence).toBe("medium");
     expect(gated.trace.ceilingReasons?.join("\n")).toContain("反方研究员 pass 未完成");
     expect(gated.trace.nextActions?.join("\n")).toContain("research:bear");
   });
 
-  it("keeps high confidence when the bear pass is completed", () => {
+  it("a failed pass never unlocks high (conservative default)", () => {
     const candidate = scoreCandidate(stock, [p0, p1]);
-    const gated = applyBearCaseGate(candidate, new Set(["688999"]));
+    const gated = applyBearCaseGate(candidate, record(null, "parse-failed"));
+    expect(gated.confidence).toBe("medium");
+  });
+
+  it("keeps high confidence only when the completed verdict is intact", () => {
+    const candidate = scoreCandidate(stock, [p0, p1]);
+    const gated = applyBearCaseGate(candidate, record({ ...VALID_BEAR, verdict: "intact" }));
     expect(gated.confidence).toBe("high");
   });
 
-  it("leaves low/medium candidates untouched", () => {
+  it("weakened verdict caps at medium", () => {
+    const candidate = scoreCandidate(stock, [p0, p1]);
+    const gated = applyBearCaseGate(candidate, record(VALID_BEAR));
+    expect(gated.confidence).toBe("medium");
+    expect(gated.trace.ceilingReasons?.join("\n")).toContain("weakened");
+  });
+
+  it("refuted verdict caps at low even for a strong bull candidate", () => {
+    const candidate = scoreCandidate(stock, [p0, p1]);
+    const gated = applyBearCaseGate(candidate, record({ ...VALID_BEAR, verdict: "refuted" }));
+    expect(gated.confidence).toBe("low");
+    expect(gated.trace.ceilingReasons?.join("\n")).toContain("refuted");
+  });
+
+  it("leaves low/medium candidates untouched when no record exists", () => {
     const candidate = scoreCandidate({ ...stock, code: "300500", name: "普通股" }, []);
-    const gated = applyBearCaseGate(candidate, new Set());
+    const gated = applyBearCaseGate(candidate, {});
     expect(gated.confidence).toBe(candidate.confidence);
+  });
+});
+
+describe("bear-case schema anti-gaming", () => {
+  it("rejects five findings that repeat the same question", () => {
+    const gamed = {
+      ...VALID_BEAR,
+      failureFindings: VALID_BEAR.failureFindings.map((finding) => ({ ...finding, questionId: "second-source" as const })),
+    };
+    expect(parseBearCase(JSON.stringify(gamed))).toBeNull();
   });
 });
 
 describe("bear kill criteria feed the existing discipline system", () => {
   it("converts killCriterionCandidates into dated KillCriterion entries", () => {
-    const record: BearCaseRecord = {
+    const bearRecord: BearCaseRecord = {
       code: "688999",
       name: "测试硅光",
       generatedAt: "2026-07-02T00:00:00.000Z",
@@ -158,11 +192,11 @@ describe("bear kill criteria feed the existing discipline system", () => {
       status: "completed",
       report: VALID_BEAR,
     };
-    const criteria = bearKillCriteria(record, record.generatedAt);
+    const criteria = bearKillCriteria(bearRecord, bearRecord.generatedAt);
     expect(criteria).toHaveLength(1);
     expect(criteria[0].id).toBe("kc-bear-1");
-    expect(criteria[0].category).toBe("negative-signal");
-    expect(criteria[0].dueDate > record.generatedAt).toBe(true);
+    expect(criteria[0].category).toBe("bear-falsifier");
+    expect(criteria[0].dueDate > bearRecord.generatedAt).toBe(true);
     expect(criteria[0].posteriorDelta).toBeLessThan(0);
   });
 });
@@ -206,7 +240,7 @@ describe("verdict synthesis (anti fence-sitting, no forced point estimates)", ()
 
 describe("bear-case rendering", () => {
   it("renders a readable markdown report", () => {
-    const record: BearCaseRecord = {
+    const renderRecord: BearCaseRecord = {
       code: "688999",
       name: "测试硅光",
       generatedAt: "2026-07-02T00:00:00.000Z",
@@ -214,7 +248,7 @@ describe("bear-case rendering", () => {
       status: "completed",
       report: VALID_BEAR,
     };
-    const rendered = renderBearCase(record);
+    const rendered = renderBearCase(renderRecord);
     expect(rendered).toContain("反方研究员 pass");
     expect(rendered).toContain("Steel-man");
     expect(rendered).toContain("失效五问");

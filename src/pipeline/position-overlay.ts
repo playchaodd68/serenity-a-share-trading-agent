@@ -1,4 +1,5 @@
 import type { Portfolio } from "../portfolio/portfolio.js";
+import { evaluateCatalysts } from "../research/catalysts.js";
 import type { BearCaseRecord } from "../research/debate/bear-case.js";
 import { synthesizeVerdict, type DebateRating } from "../research/debate/verdict.js";
 import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "../types.js";
@@ -20,6 +21,7 @@ export interface PositionOverlayEntry {
   bearCaseStatus: "completed" | "missing" | "failed";
   debateRating?: DebateRating;
   overdueKillCriteria: number;
+  overdueCatalysts: number;
   conflicts: string[];
 }
 
@@ -65,6 +67,7 @@ export function buildPositionOverlay(inputs: PositionOverlayInputs): PositionOve
     const debateRating =
       candidate != null ? synthesizeVerdict(candidate, bearRecord?.report ?? null).rating : undefined;
     const overdue = overdueKillCriteriaCount(watchlistEntry, now);
+    const overdueCatalysts = watchlistEntry?.catalysts ? evaluateCatalysts(watchlistEntry.catalysts, new Set(), now).due.length : 0;
 
     const conflicts: string[] = [];
     if (debateRating === "reduce" || debateRating === "kill") {
@@ -78,6 +81,9 @@ export function buildPositionOverlay(inputs: PositionOverlayInputs): PositionOve
     }
     if (overdue > 0) {
       conflicts.push(`有 ${overdue} 条 kill criteria 已到期未核验。`);
+    }
+    if (overdueCatalysts > 0) {
+      conflicts.push(`有 ${overdueCatalysts} 条催化剂已到期未兑现/未确认——到期未兑现应下调后验，不是继续等待。`);
     }
     if (bearCaseStatus !== "completed" && candidate != null) {
       conflicts.push("该持仓尚无完成的反方研究员 pass：先跑 npm run research:bear。");
@@ -95,6 +101,7 @@ export function buildPositionOverlay(inputs: PositionOverlayInputs): PositionOve
       bearCaseStatus,
       debateRating,
       overdueKillCriteria: overdue,
+      overdueCatalysts,
       conflicts,
     };
   });

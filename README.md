@@ -41,6 +41,7 @@ npm run review
 - `npm run watchlist`: print the current persistent research watchlist.
 - `npm run research:bear -- <code>`: run the mandatory adversarial bear-case pass (fresh-context bear researcher: steel-man first, 失效五问, evidence-ID citations) for a candidate in the latest screen run; high confidence is unreachable without a completed bear case.
 - `npm run portfolio:review`: read-only position overlay — maps blind-channel conclusions (screen run, watchlist, bear cases, graveyard, kill criteria) onto `data/portfolio.json` as exposure/concentration/conflicts. Holdings never flow back into scoring (position firewall; see `data/portfolio.example.json`).
+- `npm run resolutions:update`: resolve due watchlist theses against realized stock/benchmark returns via FFD quote history and append them to `runs/resolutions.json` (the write side of the Brier fulfillment loop; entries with missing data are skipped explicitly, never fabricated).
 - `npm run calibration`: rebuild the latest calibration snapshot, resolve decision-log entries, print the sycophancy slice (portfolio-related vs unrelated optimism/hit-rate gap) and the Thompson-sampling research-direction suggestion.
 - `npm run evals`: run deterministic answer-safety evals plus sycophancy prompt evals (holdings-not-evidence, no-flip-under-pushback, two-sided crowding, forced hot-theme downgrade, etc.).
 - `npm run reports:convert`: scan FFD downloader output, convert reports to Markdown, and write staging artifacts.

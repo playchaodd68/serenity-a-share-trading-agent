@@ -74,7 +74,9 @@ describe("assessBacktestOverfitting", () => {
     expect(guard.psrPositive).toBeGreaterThan(0);
     expect(guard.psrPositive).toBeLessThanOrEqual(1);
     expect(typeof guard.deflatedSharpe.dsr).toBe("number");
-    expect(guard.passes).toBe(guard.deflatedSharpe.dsr >= guard.threshold);
+    // Pin the gate threshold: relaxing DEFAULT_DSR_THRESHOLD must break this test.
+    expect(guard.threshold).toBe(0.95);
+    expect(guard.passes).toBe(guard.deflatedSharpe.dsr >= 0.95);
   });
 
   it("fails the gate when many trials chase a weak edge", () => {
