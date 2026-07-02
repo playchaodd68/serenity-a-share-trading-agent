@@ -44,6 +44,10 @@ npm run review
 - `npm run resolutions:update`: resolve due watchlist theses against realized stock/benchmark returns via FFD quote history and append them to `runs/resolutions.json` (the write side of the Brier fulfillment loop; entries with missing data are skipped explicitly, never fabricated).
 - `npm run resolutions`: render the realized-outcome calibration report (Brier/log/ECE, overconfidence gap) from `runs/resolutions.json`.
 - `npm run graveyard`: render the graveyard summary (passed-over / killed / downgraded theses) and the survivors-only vs combined hit rate.
+- `npm run library:search -- <keyword>`: hybrid retrieval (BM25 + bge-m3 dense fused via RRF) over the accepted local report library; degrades to lexical-only when Ollama is down. Also exposed as the agent tool `search_report_library` and Feishu `/library <keyword>`.
+- `npm run library:embed`: build/refresh the local embedding index incrementally (Ollama bge-m3; auto-refreshed after reports:convert and reports:accept-quality).
+- `npm run library:eval`: run the golden retrieval eval (evals/library-retrieval.json, report-level recall@5/@10 + MRR) in lexical-only and hybrid modes — run before and after any retrieval change.
+- `npm run reports:rechunk`: rebuild chunks/claims/evidence for the processed library with the token-bounded chunker.
 - `npm run calibration`: rebuild the latest calibration snapshot, resolve decision-log entries, print the sycophancy slice (portfolio-related vs unrelated optimism/hit-rate gap) and the Thompson-sampling research-direction suggestion.
 - `npm run evals`: run deterministic answer-safety evals plus sycophancy prompt evals (holdings-not-evidence, no-flip-under-pushback, two-sided crowding, forced hot-theme downgrade, etc.).
 - `npm run reports:convert`: scan FFD downloader output, convert reports to Markdown, and write staging artifacts.
@@ -126,6 +130,7 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/reports-reject <id>`
 - `/archive-obsidian`: manually refresh the Obsidian knowledgebase
 - `/watchlist`
+- `/library <keyword>`: hybrid search over the local accepted report library
 - `/bear <code>`: run the adversarial bear-case pass for a candidate
 - `/portfolio-review`: read-only holdings overlay (never feeds back into scoring)
 - `/calibration`

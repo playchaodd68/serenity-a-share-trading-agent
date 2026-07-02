@@ -46,6 +46,7 @@ import { computeSycophancySlices, renderSycophancySlices } from "./research/syco
 import { hybridSearchReportLibrary, renderHybridResults } from "./research/library-hybrid.js";
 import { buildEmbeddingIndex } from "./research/library-index.js";
 import { createOllamaEmbeddingClient, isOllamaAvailable } from "./research/embeddings.js";
+import { loadRetrievalEvalCases, renderRetrievalEval, runRetrievalEval } from "./research/library-eval.js";
 import { rechunkFfdReports, renderFfdRechunkRun } from "./research/report-library.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
 import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
@@ -725,6 +726,23 @@ async function libraryEmbedCommand() {
   );
 }
 
+
+async function libraryEvalCommand() {
+  const cases = await loadRetrievalEvalCases();
+  const summaries = [];
+  summaries.push(
+    await runRetrievalEval(cases, (query) => hybridSearchReportLibrary(query, { topK: 12 }, { embeddingIndex: null }), "lexical-only"),
+  );
+  if (await isOllamaAvailable()) {
+    summaries.push(await runRetrievalEval(cases, (query) => hybridSearchReportLibrary(query, { topK: 12 }), "hybrid"));
+  } else {
+    console.warn("Ollama 未运行:跳过 hybrid 模式评测。");
+  }
+  const rendered = renderRetrievalEval(summaries);
+  await writeJsonFile("runs/library-retrieval-eval-latest.json", summaries);
+  console.log(rendered);
+}
+
 async function harness() {
   const result = await runHarness();
   for (const item of result.checks) {
@@ -1395,6 +1413,9 @@ async function main() {
       break;
     case "library-embed":
       await libraryEmbedCommand();
+      break;
+    case "library-eval":
+      await libraryEvalCommand();
       break;
     case "reports-rechunk":
       console.log(renderFfdRechunkRun(await rechunkFfdReports()));
