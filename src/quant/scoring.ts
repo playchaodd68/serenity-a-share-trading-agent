@@ -12,7 +12,13 @@ import type {
 
 export const SERENITY_QUANT_STRATEGY = "Serenity Mainline Quant Overlay" as const;
 
-const NO_CROWDING_NOTE = "成交集中、机构抱团、换手抬升不作为拥挤降权；只有趋势破坏、证据削弱或交易不可执行才降权。";
+const TWO_SIDED_CROWDING_NOTE =
+  "拥挤度双向计价：供给侧集中（卡点强度）按证据加分；交易侧拥挤（高换手/情绪/题材接力）在缺乏新增强证据时降权——集中与拥挤是两个变量，趋势破坏、证据削弱、交易不可执行同样降权。";
+
+// Hype penalty only fires when trading heat is NOT backed by strong candidate evidence:
+// strong P0/P1-backed concentration is chokepoint strength, not crowding.
+const HYPE_TURNOVER_THRESHOLD = 10;
+const HYPE_MAX_PENALTY = 6;
 
 function clamp(value: number, min = 0, max = 100): number {
   if (!Number.isFinite(value)) return min;
@@ -159,13 +165,31 @@ function scoreIndustry(industryKey: string, candidates: Candidate[]): QuantIndus
     component("evidence-gap-penalty", -evidencePenalty, 0, "覆盖缺口只惩罚证据不足，不惩罚成交或持仓集中。", sourceIds, "penalty"),
   ];
 
+  const avgIndustryTurnover = avg(candidates.map((candidate) => candidate.stock.turnover ?? 0));
+  const industryHypePenalty =
+    avgIndustryTurnover >= HYPE_TURNOVER_THRESHOLD && reportEvidenceRatio < 0.2
+      ? clamp((avgIndustryTurnover - HYPE_TURNOVER_THRESHOLD) * 0.8, 0, HYPE_MAX_PENALTY)
+      : 0;
+  if (industryHypePenalty > 0) {
+    components.push(
+      component(
+        "industry-hype-crowding-penalty",
+        -industryHypePenalty,
+        0,
+        `行业平均换手 ${avgIndustryTurnover.toFixed(1)}% 处于高位且缺 P1/研报级验证（占比 ${(reportEvidenceRatio * 100).toFixed(0)}%），按交易侧拥挤降权。`,
+        ["EASTMONEY-A-SHARE-SNAPSHOT"],
+        "penalty",
+      ),
+    );
+  }
+
   const score = clamp(components.reduce((sum, item) => sum + item.score, 0), 0, 100);
   return {
     industryKey,
     score: Number(score.toFixed(2)),
     tier: industryTier(score),
     components,
-    notes: [NO_CROWDING_NOTE, "行业拥挤度指标仅作为交易结构观察项，不进入主线扣分。"],
+    notes: [TWO_SIDED_CROWDING_NOTE, "供给侧集中按证据计入卡点强度；交易侧拥挤只在缺新增强证据时降权。"],
   };
 }
 
@@ -212,7 +236,7 @@ function scoreVolumePrice(candidate: Candidate): QuantScoreComponent {
   const reason = [
     mainInflow > 0 ? "主力净流入为正" : "主力净流入未确认",
     pct > 0 ? "价格正反馈" : "价格尚未确认",
-    `换手 ${turnover.toFixed(2)}% 只作流动性观察，不作拥挤惩罚`,
+    `换手 ${turnover.toFixed(2)}% 计入流动性观察；拥挤度另行双向计价`,
   ].join("; ");
   return component("volume-price-confirmation", score, 8, reason, ["EASTMONEY-A-SHARE-SNAPSHOT"]);
 }
@@ -288,8 +312,28 @@ function technicalConfirmation(candidate: Candidate, industry: QuantIndustryScor
     trend: pct > 0 ? `价格正反馈：涨跌幅 ${pct.toFixed(2)}%。` : `趋势未确认：涨跌幅 ${pct.toFixed(2)}%。`,
     volumePrice: mainInflow > 0 ? `量价/资金确认：主力净流入为正，换手 ${turnover.toFixed(2)}%。` : `量价/资金中性：主力净流入未确认，换手 ${turnover.toFixed(2)}%。`,
     liquidity: candidate.stock.latestPrice == null ? "价格缺失，需补行情。" : "行情字段可用，需在回测层继续处理涨跌停和成交约束。",
-    marketConsensus: `行业 ${industry.tier} 档，成交集中或机构抱团不作为负面因子。`,
+    marketConsensus: `行业 ${industry.tier} 档；供给侧集中按证据计分，交易侧拥挤在缺新增强证据时降权（双向计价）。`,
   };
+}
+
+function stockHypePenalty(candidate: Candidate, gate: QuantEvidenceGate): QuantScoreComponent | null {
+  const hype = candidate.trace.hypeRisk;
+  const turnover = candidate.stock.turnover ?? 0;
+  const marketHot = turnover >= HYPE_TURNOVER_THRESHOLD;
+  const methodologyPenalty = hype?.penalty ?? 0;
+  if (gate === "pass" && methodologyPenalty === 0) return null;
+  const penalty = clamp(
+    (methodologyPenalty / 18) * 4 + (marketHot && gate !== "pass" ? Math.min((turnover - HYPE_TURNOVER_THRESHOLD) * 0.5, 2) : 0),
+    0,
+    HYPE_MAX_PENALTY,
+  );
+  if (penalty <= 0) return null;
+  const reasons = [
+    ...(methodologyPenalty > 0 ? [`方法论层拥挤/情绪信号扣 ${methodologyPenalty} 分`] : []),
+    ...(hype?.reflexivityFlag ? ["反身性：价格异动无新增 P0/P1 证据"] : []),
+    ...(marketHot && gate !== "pass" ? [`换手 ${turnover.toFixed(1)}% 高位且证据门未通过`] : []),
+  ];
+  return component("hype-crowding-penalty", -penalty, 0, `交易侧拥挤降权：${reasons.join("；")}。供给侧集中不在此惩罚。`, candidateSourceIds(candidate), "penalty");
 }
 
 export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustryScore, generatedAt = new Date().toISOString()): QuantCandidateOverlay {
@@ -297,6 +341,7 @@ export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustr
   const sources = candidateSourceIds(candidate);
   const serenityPosterior = component("serenity-posterior", scale(candidate.score, 100, 30), 30, `沿用 Serenity 产业链后验分 ${candidate.score.toFixed(1)}。`, sources);
   const industryComponent = component("industry-mainline-score", scale(industry.score, 100, 15), 15, `行业 ${industry.industryKey} 为 ${industry.tier} 档，主线分 ${industry.score.toFixed(1)}。`, sources);
+  const hypePenalty = stockHypePenalty(candidate, gate);
   const components = [
     serenityPosterior,
     industryComponent,
@@ -307,6 +352,7 @@ export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustr
     scoreValuation(candidate),
     scoreLiquidity(candidate),
     thunderstormPenalty(candidate),
+    ...(hypePenalty ? [hypePenalty] : []),
   ];
   const total = clamp(components.reduce((sum, item) => sum + item.score, 0), 0, 100);
   const excluded = excludedReasons(candidate);
@@ -314,7 +360,8 @@ export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustr
   const warnings = [
     ...(gate === "pass" ? [] : ["产业证据尚未达到核心组合准入，只能进入观察或候选队列。"]),
     ...(candidate.trace.coverageGaps.length > 0 ? [`覆盖缺口：${candidate.trace.coverageGaps.slice(0, 2).join("；")}`] : []),
-    NO_CROWDING_NOTE,
+    ...(candidate.trace.disqualifiers?.triggered ? [`一票否决信号：${candidate.trace.disqualifiers.hitSignals.join("；")}（置信度封顶 low）。`] : []),
+    TWO_SIDED_CROWDING_NOTE,
   ];
 
   return {
@@ -328,7 +375,7 @@ export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustr
     technicalConfirmation: technicalConfirmation(candidate, industry),
     warnings,
     excludedReasons: excluded,
-    noCrowdingPenalty: true,
+    crowdingPolicy: "two-sided",
   };
 }
 
@@ -380,7 +427,7 @@ export function applySerenityQuantOverlay(candidates: Candidate[], generatedAt =
   const summary: QuantScreenSummary = {
     strategy: SERENITY_QUANT_STRATEGY,
     generatedAt,
-    noCrowdingPenalty: true,
+    crowdingPolicy: "two-sided",
     riskMode: riskModeFor(scored),
     bucketCounts,
     industryTiers: [...industryScores.values()]
@@ -393,7 +440,7 @@ export function applySerenityQuantOverlay(candidates: Candidate[], generatedAt =
       .sort((a, b) => b.score - a.score),
     notes: [
       "产业逻辑和趋势是准入门槛，技术面量化只做确认、排序和仓位辅助。",
-      NO_CROWDING_NOTE,
+      TWO_SIDED_CROWDING_NOTE,
       "当前为 screen-grade overlay：历史回测层后续可复用相同组件并替换趋势/景气代理指标。",
     ],
   };

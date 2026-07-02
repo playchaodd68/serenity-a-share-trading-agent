@@ -2,7 +2,9 @@ import type {
   AShareStock,
   BottleneckTheme,
   Candidate,
+  DisqualifierAssessment,
   EvidenceItem,
+  HypeRiskAssessment,
   IndustryLogicAssessment,
   MethodologyTrace,
   NegativeSignalAssessment,
@@ -13,6 +15,7 @@ import type {
 import { extractCandidateEvidence, summarizeEvidence } from "./research/evidence.js";
 import { buildSupplyChainGraph } from "./research/graph.js";
 import { buildKillCriteria } from "./research/kill-criteria.js";
+import { applyRatingConstraint, computeRatingConstraint, confidenceFromScore } from "./scoring/rating-constraints.js";
 
 export const DEFAULT_THEMES: BottleneckTheme[] = [
   {
@@ -81,7 +84,7 @@ export const METHODOLOGY_NOTE = `# Serenity 产业链瓶颈方法论
 以下规则来自用户提供的前半导体基金经理近期产业逻辑梳理，只作为方法论输入，不作为任何候选公司的主证据。系统必须以产业逻辑和趋势为核心主导，先排序产业链环节，再映射 A 股公司：
 
 1. 时代主线优先：先判断资本开支、利润、产能和估值会往哪个产业方向迁移，再讨论个股估值和交易热度。
-2. 拥挤度需要重定义：早期主线的资源集中、讨论集中和资金集中不等于泡沫；真正危险的是未来增量已经被充分定价，且缺少订单、价格、产能或客户验证的新证据。
+2. 拥挤度双向计价：供给侧集中（稀缺环节的供应商集中、认证壁垒、扩产难）按证据计为卡点强度，属正面变量；交易侧拥挤（讨论集中、资金集中、情绪高位、被抢跑）在缺少订单、价格、产能或客户验证的新增量证据时按负面信号计价。出处保真修正（2026-07 核查 Serenity 原文）：源头方法论本身惩罚「已拥挤/被抢跑」并将大额稀释视为一票否决，早前蒸馏版「集中=共识确认、不减分」是单向截断，已废弃。
 3. 下一层瓶颈优先：从整机/模块继续下钻到光芯片、InP、硅光、MPO/连接器、测试设备、PCB/铜箔/MLCC、设备材料等卡点，优先寻找断供、良率、认证、扩产周期和价格弹性。
 4. 预期差不是冷门：高关注方向仍可能有业绩超预期，冷门方向也可能没有催化。有效预期差必须落到 Q2/Q3/年度业绩、订单、客户导入、扩产和价格变化。
 5. 产业逻辑要量化：每条瓶颈线索都应尽量拆成“需求量 -> 供给量 -> 缺口 -> 价格 -> 单位利润 -> 公司弹性”，缺任一环节必须进入覆盖缺口。
@@ -95,6 +98,15 @@ export const METHODOLOGY_NOTE = `# Serenity 产业链瓶颈方法论
 - 多源归纳：多个独立来源共同支持的稳定模式，例如产业链映射、客户验证、产能约束。
 - 框架外推：用 Serenity-derived 框架推导但尚无直接证据的判断，必须明确写成“框架推断，不是结论”。
 - 坦承无据：材料不支持时直接说明缺口，不用自信语气填补。
+
+## 对称评分与一票否决
+
+- 正负评分结构对称：负面证据的下调空间不得被人为封顶到远小于正面上调空间。
+- 供给侧集中（卡点强度）与交易侧拥挤（hype）是方向相反的两个变量，分开计分，禁止合并成单一「集中度」。
+- 反身性检查：价格异动若仅伴随 P2 社媒线索而无新增 P0/P1 证据，记负面信号并封顶置信度（防「大 V 拉起来的涨幅」被当作 thesis 验证）。
+- 一票否决（disqualifier）：立案调查、财务造假、退市风险警示、违规担保、资金占用、清仓式减持直接将置信度封顶 low，不参与加减分博弈、不受负分上限约束。
+- 确定性评级约束：缺候选级 P0 或独立交叉验证时置信度封顶 medium；反方研究员 pass 未完成时禁止 high。
+- 每次主题扫描必须显式列出至少一个被主动降级的热门方向及理由（热度≠增量证据）。
 
 ## 反证与失效模式
 
@@ -304,7 +316,7 @@ export function assessIndustryLogic(
 }
 
 const NEGATIVE_SIGNAL_UNIT_PENALTY = 3;
-const NEGATIVE_SIGNAL_MAX_PENALTY = 18;
+const NEGATIVE_SIGNAL_MAX_PENALTY = 24;
 
 // Capital-cycle / supply-side reversal terms. Distinct from theme negativeSignals and from
 // the positive supply/demand terms (which reward 产能放量/扩产订单): these are unambiguous
@@ -325,7 +337,45 @@ const SUPPLY_RELEASE_TERMS = [
 ];
 
 const SUPPLY_RELEASE_UNIT_PENALTY = 3;
-const SUPPLY_RELEASE_MAX_PENALTY = 15;
+const SUPPLY_RELEASE_MAX_PENALTY = 20;
+
+// Trading-side crowding (hype) terms. Deliberately distinct from supply-side
+// concentration: a scarce supplier layer being concentrated is chokepoint strength
+// (positive); crowded pricing/attention without new incremental evidence is hype risk
+// (negative). Source-fidelity note: Serenity's own posts penalize "already crowded /
+// front-ran" setups — the earlier "no crowding penalty" rule was a distillation error.
+const HYPE_RISK_TERMS = [
+  "情绪高位",
+  "题材炒作",
+  "游资接力",
+  "连板",
+  "涨停潮",
+  "拥挤交易",
+  "机构抱团",
+  "透支",
+  "已充分定价",
+  "被抢跑",
+  "热度过高",
+  "短线过热",
+];
+
+const HYPE_RISK_UNIT_PENALTY = 3;
+const HYPE_RISK_REFLEXIVITY_PENALTY = 6;
+const HYPE_RISK_MAX_PENALTY = 18;
+const REFLEXIVITY_PCT_THRESHOLD = 5;
+const REFLEXIVITY_TURNOVER_THRESHOLD = 8;
+
+// Hard vetoes: unambiguous governance/integrity failures. These cap confidence to low
+// via rating constraints instead of being absorbed into bounded additive penalties.
+const DISQUALIFIER_TERMS = [
+  "立案调查",
+  "证监会立案",
+  "财务造假",
+  "退市风险警示",
+  "违规担保",
+  "资金占用",
+  "清仓式减持",
+];
 
 export function assessNegativeSignals(
   stock: AShareStock,
@@ -357,6 +407,37 @@ export function assessSupplyRelease(
   const hitTerms = matchingTerms(text, SUPPLY_RELEASE_TERMS);
   const penalty = clamp(hitTerms.length * SUPPLY_RELEASE_UNIT_PENALTY, 0, SUPPLY_RELEASE_MAX_PENALTY);
   return { hitTerms, penalty };
+}
+
+export function assessHypeRisk(
+  stock: AShareStock,
+  sources: SourceRecord[],
+  matchedThemes = matchThemes(stock),
+): HypeRiskAssessment {
+  const text = combinedResearchText(stock, sources, matchedThemes);
+  const hitSignals = matchingTerms(text, HYPE_RISK_TERMS);
+  const hasStrongSource = sources.some((source) => source.tier === "P0" || source.tier === "P1");
+  const reflexivityFlag =
+    (stock.pctChange ?? 0) >= REFLEXIVITY_PCT_THRESHOLD &&
+    (stock.turnover ?? 0) >= REFLEXIVITY_TURNOVER_THRESHOLD &&
+    !hasStrongSource;
+  const penalty = clamp(
+    hitSignals.length * HYPE_RISK_UNIT_PENALTY + (reflexivityFlag ? HYPE_RISK_REFLEXIVITY_PENALTY : 0),
+    0,
+    HYPE_RISK_MAX_PENALTY,
+  );
+  return { hitSignals, reflexivityFlag, penalty };
+}
+
+export function assessDisqualifiers(
+  stock: AShareStock,
+  sources: SourceRecord[],
+  matchedThemes = matchThemes(stock),
+): DisqualifierAssessment {
+  const text = combinedResearchText(stock, sources, matchedThemes);
+  const hitSignals = matchingTerms(text, DISQUALIFIER_TERMS);
+  if (/ST|\*|退/.test(stock.name)) hitSignals.push(`名称含 ST/*/退（${stock.name}）`);
+  return { hitSignals: uniqueStrings(hitSignals), triggered: hitSignals.length > 0 };
 }
 
 export function relevantSourcesForCandidate(
@@ -409,6 +490,8 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
   const industrySourceIds = componentSources(candidateSources);
   const negativeAssessment = assessNegativeSignals(stock, candidateSources, matchedThemes, themes);
   const supplyAssessment = assessSupplyRelease(stock, candidateSources, matchedThemes);
+  const hypeAssessment = assessHypeRisk(stock, candidateSources, matchedThemes);
+  const disqualifierAssessment = assessDisqualifiers(stock, candidateSources, matchedThemes);
 
   const components: ScoreComponent[] = [
     {
@@ -477,6 +560,19 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
           : "未见供给过剩/大幅扩产/新进入者等资本周期反转信号。",
       sourceIds: industrySourceIds,
     },
+    {
+      name: "hype-crowding-penalty",
+      score: hypeAssessment.penalty > 0 ? -hypeAssessment.penalty : 0,
+      maxScore: 0,
+      reason:
+        hypeAssessment.penalty > 0
+          ? `交易侧拥挤/情绪下调后验：${[
+              ...hypeAssessment.hitSignals,
+              ...(hypeAssessment.reflexivityFlag ? ["反身性：价格异动仅伴随 P2/社媒线索，无新增 P0/P1 证据"] : []),
+            ].join("、")}。供给侧集中（卡点强度）不在此惩罚。`
+          : "未见交易侧拥挤/情绪信号；供给侧集中按证据正常计分，拥挤度双向计价。",
+      sourceIds: industrySourceIds,
+    },
   ];
 
   const priorScore = clamp(industryLogic.totalScore);
@@ -505,6 +601,14 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
   if (supplyAssessment.hitTerms.length > 0) {
     risks.push(`资本周期反转信号: ${supplyAssessment.hitTerms.join(" / ")}（供给释放削弱瓶颈耐久度，已计入后验下调 ${supplyAssessment.penalty} 分）。`);
   }
+  if (hypeAssessment.penalty > 0) {
+    risks.push(
+      `交易侧拥挤/情绪信号: ${[...hypeAssessment.hitSignals, ...(hypeAssessment.reflexivityFlag ? ["反身性异动"] : [])].join(" / ")}（已计入后验下调 ${hypeAssessment.penalty} 分；拥挤度双向计价，供给侧集中不在此惩罚）。`,
+    );
+  }
+  if (disqualifierAssessment.triggered) {
+    risks.push(`一票否决信号: ${disqualifierAssessment.hitSignals.join(" / ")}（置信度封顶 low，不受负分上限约束）。`);
+  }
 
   const generatedAt = new Date().toISOString();
   const trace: MethodologyTrace = {
@@ -518,6 +622,8 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     coverageGaps: [],
     negativeSignals: negativeAssessment.hitSignals,
     supplyReleaseSignals: supplyAssessment.hitTerms,
+    hypeRisk: hypeAssessment,
+    disqualifiers: disqualifierAssessment,
   };
   const candidate: Candidate = {
     stock,
@@ -554,7 +660,13 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     entryDate: generatedAt,
   });
 
-  candidate.confidence = expectedValueScore >= 70 && hasCandidateP0 && hasIndependentCorroboration ? "high" : expectedValueScore >= 45 ? "medium" : "low";
+  const ratingConstraint = computeRatingConstraint({
+    hasCandidateP0,
+    hasIndependentCorroboration,
+    disqualifierTriggered: disqualifierAssessment.triggered,
+    reflexivityFlag: hypeAssessment.reflexivityFlag,
+  });
+  candidate.confidence = applyRatingConstraint(confidenceFromScore(expectedValueScore), ratingConstraint);
   candidate.trace = {
     ...trace,
     structuredEvidence,
@@ -562,6 +674,8 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     nextActions: evidenceSummary.nextActions,
     coverageGaps: [...new Set(coverageGaps)],
     killCriteria,
+    confidenceCeiling: ratingConstraint.ceiling,
+    ceilingReasons: ratingConstraint.reasons,
   };
 
   return candidate;

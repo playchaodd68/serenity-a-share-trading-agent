@@ -20,7 +20,7 @@ import { createTradingChatSession, promptTradingChatSession, runInteractiveChat,
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
-import { renderAnswerSafetyEvals, runAnswerSafetyEvals } from "./research/evals.js";
+import { renderAnswerSafetyEvals, renderSycophancyEvals, runAnswerSafetyEvals, runSycophancyPromptEvals } from "./research/evals.js";
 import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
 import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
 import { organizeFfdObsidianKnowledgebase, renderFfdObsidianOrganizationRun } from "./research/ffd-obsidian-organizer.js";
@@ -520,6 +520,8 @@ async function researchRefresh() {
   await writeCalibrationSnapshot(calibration);
   const evals = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/answer-safety-evals-latest.json", evals);
+  const sycophancyEvals = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancyEvals);
   const doctorReport = await diagnoseRuntime();
   await writeJsonFile(`runs/doctor-${run.runId}.json`, doctorReport);
   await appendJsonl("runs/research-refresh.jsonl", {
@@ -532,14 +534,17 @@ async function researchRefresh() {
     calibration: { reportsAnalyzed: calibration.reportsAnalyzed, candidatesAnalyzed: calibration.candidatesAnalyzed },
     evalsPassed: evals.filter((item) => item.passed).length,
     evalsTotal: evals.length,
+    sycophancyPassed: sycophancyEvals.filter((item) => item.passed).length,
+    sycophancyTotal: sycophancyEvals.length,
     doctorOk: doctorReport.ok,
   });
   console.log(`Research refresh completed: ${run.runId}`);
   console.log(`Watchlist entries: ${watchlist.length}`);
   console.log(renderCalibrationSnapshot(calibration));
   console.log(renderAnswerSafetyEvals(evals));
+  console.log(renderSycophancyEvals(sycophancyEvals));
   console.log(renderDoctorReport(doctorReport));
-  if (!doctorReport.ok || evals.some((item) => !item.passed)) process.exitCode = 1;
+  if (!doctorReport.ok || evals.some((item) => !item.passed) || sycophancyEvals.some((item) => !item.passed)) process.exitCode = 1;
 }
 
 async function harness() {
@@ -574,8 +579,11 @@ async function calibration() {
 async function evals() {
   const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/answer-safety-evals-latest.json", results);
+  const sycophancy = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancy);
   console.log(renderAnswerSafetyEvals(results));
-  if (results.some((item) => !item.passed)) process.exitCode = 1;
+  console.log(renderSycophancyEvals(sycophancy));
+  if (results.some((item) => !item.passed) || sycophancy.some((item) => !item.passed)) process.exitCode = 1;
 }
 
 function renderQuantBacktestInputHelp(inputPath: string): string {
@@ -837,7 +845,9 @@ async function feishuServer() {
       case "/evals": {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
-        return renderAnswerSafetyEvals(results);
+        const sycophancy = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+        await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancy);
+        return [renderAnswerSafetyEvals(results), renderSycophancyEvals(sycophancy)].join("\n\n");
       }
       case "/quant-adapt-history":
         return quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []);

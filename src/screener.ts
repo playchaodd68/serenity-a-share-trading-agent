@@ -1,6 +1,7 @@
 import { fetchAShareSnapshot } from "./connectors/eastmoney.js";
 import { scoreCandidate } from "./methodology.js";
 import { applySerenityQuantOverlay } from "./quant/scoring.js";
+import { computeHotThemeDowngrades } from "./research/theme-heat.js";
 import type { Candidate, ScreenRun, SourceRecord } from "./types.js";
 
 export interface ScreenOptions {
@@ -29,5 +30,8 @@ export async function screenCandidates(sources: SourceRecord[], options: ScreenO
     totalStocksScanned: stocks.length,
     sourceCount: sources.length,
     quantSummary: quant.summary,
+    // Computed over the full matched set (pre-topN) so the downgrade slot reflects
+    // the whole scanned theme universe, not just the survivors.
+    hotThemeDowngrades: computeHotThemeDowngrades(quant.candidates),
   };
 }

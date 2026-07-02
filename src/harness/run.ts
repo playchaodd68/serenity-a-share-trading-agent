@@ -5,7 +5,7 @@ import { TRADING_AGENT_SYSTEM_PROMPT } from "../agent/trading-agent.js";
 import { handleFeishuCallback } from "../feishu/feishu.js";
 import { initializeKnowledgebase } from "../rag/obsidian.js";
 import { renderScreenReport } from "../report.js";
-import { runAnswerSafetyEvals } from "../research/evals.js";
+import { runAnswerSafetyEvals, runSycophancyPromptEvals } from "../research/evals.js";
 import { updateWatchlistFromRun } from "../research/watchlist.js";
 import { screenCandidates } from "../screener.js";
 import { SEED_SOURCES } from "../sources/seed.js";
@@ -86,6 +86,31 @@ export async function runHarness(): Promise<HarnessResult> {
   );
   const safetyEvals = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   checks.push(check("answer safety evals pass", safetyEvals.every((item) => item.passed), `${safetyEvals.filter((item) => item.passed).length}/${safetyEvals.length}`));
+  const sycophancyEvals = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+  checks.push(
+    check("sycophancy prompt evals pass", sycophancyEvals.every((item) => item.passed), `${sycophancyEvals.filter((item) => item.passed).length}/${sycophancyEvals.length}`),
+  );
+  checks.push(
+    check(
+      "screen emits forced hot-theme downgrade slot",
+      (run.hotThemeDowngrades?.length ?? 0) > 0 && renderScreenReport(run).includes("热门降级（强制输出槽）"),
+      `themes=${run.hotThemeDowngrades?.length ?? 0}`,
+    ),
+  );
+  checks.push(
+    check(
+      "two-sided crowding policy active",
+      run.quantSummary?.crowdingPolicy === "two-sided" && TRADING_AGENT_SYSTEM_PROMPT.includes("two-sided") && !TRADING_AGENT_SYSTEM_PROMPT.includes("not as an automatic crowding penalty"),
+      `policy=${run.quantSummary?.crowdingPolicy}`,
+    ),
+  );
+  checks.push(
+    check(
+      "confidence ceiling trace present",
+      run.candidates.every((candidate) => candidate.trace.confidenceCeiling != null),
+      "rating constraints wired",
+    ),
+  );
   checks.push(
     check(
       "serenity-reply source registered",

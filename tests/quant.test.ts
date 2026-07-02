@@ -26,7 +26,7 @@ const p1: SourceRecord = {
 };
 
 describe("Serenity quant overlay", () => {
-  it("does not apply crowding penalties to concentrated core-asset signals", () => {
+  it("does not penalize evidence-backed concentration (supply-side strength)", () => {
     const stock: AShareStock = {
       code: "688999",
       name: "测试硅光",
@@ -45,12 +45,37 @@ describe("Serenity quant overlay", () => {
     const run = applySerenityQuantOverlay([candidate], "2026-06-04T00:00:00.000Z");
     const quant = run.candidates[0].quant!;
 
-    expect(quant.noCrowdingPenalty).toBe(true);
-    expect(run.summary.noCrowdingPenalty).toBe(true);
-    expect(quant.components.map((item) => item.name)).not.toContain("StockCrowdingRisk");
-    expect(quant.industry.components.map((item) => item.name)).not.toContain("CrowdingPenalty");
-    expect(quant.warnings.join("\n")).toContain("不作为拥挤降权");
+    expect(quant.crowdingPolicy).toBe("two-sided");
+    expect(run.summary.crowdingPolicy).toBe("two-sided");
+    // Strong P0+P1 evidence passes the gate, so high turnover is chokepoint heat, not hype.
+    expect(quant.components.find((item) => item.name === "hype-crowding-penalty")).toBeUndefined();
+    expect(quant.warnings.join("\n")).toContain("双向计价");
     expect(quant.bucket).not.toBe("reject");
+  });
+
+  it("penalizes trading-side crowding when heat lacks strong evidence", () => {
+    const stock: AShareStock = {
+      code: "300099",
+      name: "测试热门股",
+      latestPrice: 44,
+      pctChange: 9.5,
+      totalMarketCap: 18_000_000_000,
+      floatMarketCap: 9_000_000_000,
+      pe: 120,
+      turnover: 22,
+      mainNetInflow: 300_000_000,
+      industry: "光通信",
+      region: "测试",
+      concept: "AI算力 CPO 光模块",
+    };
+    const candidate = scoreCandidate(stock, []);
+    const run = applySerenityQuantOverlay([candidate], "2026-06-04T00:00:00.000Z");
+    const quant = run.candidates[0].quant!;
+    const penalty = quant.components.find((item) => item.name === "hype-crowding-penalty");
+    expect(candidate.trace.hypeRisk?.reflexivityFlag).toBe(true);
+    expect(penalty).toBeDefined();
+    expect(penalty!.score).toBeLessThan(0);
+    expect(candidate.confidence).not.toBe("high");
   });
 
   it("keeps technically strong stocks out of the core bucket when industry evidence is missing", () => {

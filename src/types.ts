@@ -1,5 +1,6 @@
 export type SourceTier = "P0" | "P1" | "P2";
 export type EvidencePolarity = "positive" | "negative" | "neutral";
+export type ConfidenceLevel = "low" | "medium" | "high";
 export type ResearchEvidenceKind =
   | "primary-filing"
   | "broker-report"
@@ -133,6 +134,10 @@ export interface MethodologyTrace {
   killCriteria?: KillCriterion[];
   negativeSignals?: string[];
   supplyReleaseSignals?: string[];
+  hypeRisk?: HypeRiskAssessment;
+  disqualifiers?: DisqualifierAssessment;
+  confidenceCeiling?: ConfidenceLevel;
+  ceilingReasons?: string[];
 }
 
 export interface AShareStock {
@@ -169,6 +174,34 @@ export interface SupplyReleaseAssessment {
   penalty: number;
 }
 
+// Trading-side crowding (hype) is scored separately from supply-side concentration
+// (chokepoint strength). Reflexivity flag marks price action driven only by P2/social
+// signals with no new P0/P1 evidence in the candidate's source set.
+export interface HypeRiskAssessment {
+  hitSignals: string[];
+  reflexivityFlag: boolean;
+  penalty: number;
+}
+
+// Hard vetoes that cap confidence regardless of additive score (not bounded by the
+// negative-penalty caps): 立案调查 / 财务造假 / 清仓式减持 / ST 标签等。
+export interface DisqualifierAssessment {
+  hitSignals: string[];
+  triggered: boolean;
+}
+
+export interface HotThemeDowngrade {
+  themeId: string;
+  label: string;
+  heatScore: number;
+  avgTurnover: number;
+  avgPctChange: number;
+  candidateCount: number;
+  hasStrongEvidence: boolean;
+  downgraded: boolean;
+  reason: string;
+}
+
 export type KillCriterionCategory =
   | "evidence-gap"
   | "expectation-window"
@@ -190,7 +223,7 @@ export interface Candidate {
   stock: AShareStock;
   matchedThemes: Array<{ themeId: string; label: string; keywords: string[] }>;
   score: number;
-  confidence: "low" | "medium" | "high";
+  confidence: ConfidenceLevel;
   trace: MethodologyTrace;
   quant?: QuantCandidateOverlay;
   generatedAt: string;
@@ -236,13 +269,13 @@ export interface QuantCandidateOverlay {
   technicalConfirmation: QuantTechnicalConfirmation;
   warnings: string[];
   excludedReasons: string[];
-  noCrowdingPenalty: true;
+  crowdingPolicy: "two-sided";
 }
 
 export interface QuantScreenSummary {
   strategy: "Serenity Mainline Quant Overlay";
   generatedAt: string;
-  noCrowdingPenalty: true;
+  crowdingPolicy: "two-sided";
   riskMode: QuantRiskMode;
   bucketCounts: Record<QuantCandidateBucket, number>;
   industryTiers: Array<{ industryKey: string; score: number; tier: QuantIndustryTier; candidateCount: number }>;
@@ -256,6 +289,9 @@ export interface ScreenRun {
   totalStocksScanned: number;
   sourceCount: number;
   quantSummary?: QuantScreenSummary;
+  // Forced hot-theme downgrade slot: every screen must rank theme heat and state which
+  // popular direction is deliberately downgraded (or why none qualifies).
+  hotThemeDowngrades?: HotThemeDowngrade[];
   reportPath?: string;
   jsonPath?: string;
 }
