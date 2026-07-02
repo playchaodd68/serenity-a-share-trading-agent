@@ -45,6 +45,11 @@ import { createDeepSeekClient } from "./research/debate/llm-client.js";
 import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
 import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
 import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
+import { hybridSearchReportLibrary, renderHybridResults } from "./research/library-hybrid.js";
+import { buildEmbeddingIndex } from "./research/library-index.js";
+import { createOllamaEmbeddingClient, isOllamaAvailable } from "./research/embeddings.js";
+import { loadRetrievalEvalCases, renderRetrievalEval, runRetrievalEval } from "./research/library-eval.js";
+import { rechunkFfdReports, renderFfdRechunkRun } from "./research/report-library.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
 import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
 import { DEFAULT_THEMES } from "./methodology.js";
@@ -348,6 +353,23 @@ function renderFfdReportEnhanceRun(run: FfdReportLibraryRun): string {
     .join("\n");
 }
 
+
+// Event-driven embedding refresh: whenever the accepted corpus changes (conversion or
+// acceptance), incrementally refresh the vector index if Ollama is up. Best-effort —
+// retrieval degrades to lexical-only when the index is stale or missing, never fails.
+async function refreshLibraryEmbeddingsBestEffort(context: string): Promise<void> {
+  try {
+    if (!(await isOllamaAvailable())) {
+      console.warn(`library embedding refresh skipped (${context}): Ollama not running; retrieval stays lexical until npm run library:embed.`);
+      return;
+    }
+    const stats = await buildEmbeddingIndex(createOllamaEmbeddingClient());
+    console.log(`library embeddings refreshed (${context}): +${stats.embedded} embedded, ${stats.reused} reused, ${stats.pruned} pruned.`);
+  } catch (error) {
+    console.warn(`library embedding refresh failed (${context}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function convertFfdReports(): Promise<string> {
   const result = await processFfdReportLibrary();
   await appendJsonl("runs/ffd-report-library.jsonl", {
@@ -360,6 +382,7 @@ async function convertFfdReports(): Promise<string> {
     warnings: result.warnings,
   });
   if (result.processed.length > 0) {
+    await refreshLibraryEmbeddingsBestEffort("convert");
     await notifyFeishuReport("FFD研报库新增研报", renderFfdReportReview(result.processed, 8));
   }
   return renderFfdReportLibraryRun(result);
@@ -415,6 +438,7 @@ async function acceptQualityFfdReportsCommand(): Promise<string> {
   const merged = mergeSources(await loadSourceRegistry(), accepted.map((item) => item.source));
   await saveSourceRegistry(merged);
   await syncKnowledgebaseSources(merged);
+  await refreshLibraryEmbeddingsBestEffort("accept-quality");
   await appendJsonl("runs/ffd-report-library.jsonl", {
     type: "accept-quality",
     at: new Date().toISOString(),
@@ -685,6 +709,48 @@ async function resolutionsUpdate() {
   await saveResolutions(merged);
   console.log(`Resolved ${fresh.length}/${dueInputs.length} (skipped entries stay unresolved; no fabricated data).`);
   console.log(`Total resolutions on ledger: ${merged.length}. Run npm run calibration to refresh Brier/slices.`);
+}
+
+
+async function librarySearchCommand(queryArg?: string) {
+  const query = (queryArg ?? process.argv.slice(3).join(" ")).trim();
+  if (!query) {
+    console.error("Usage: npm run library:search -- <关键词>");
+    process.exitCode = 1;
+    return;
+  }
+  console.log(renderHybridResults(query, await hybridSearchReportLibrary(query)));
+}
+
+async function libraryEmbedCommand() {
+  if (!(await isOllamaAvailable())) {
+    console.error("Ollama 未运行：先启动 Ollama（并确认已 pull bge-m3），再运行 npm run library:embed。");
+    process.exitCode = 1;
+    return;
+  }
+  const client = createOllamaEmbeddingClient();
+  console.log(`Building embedding index via ${client.label}...`);
+  const stats = await buildEmbeddingIndex(client);
+  console.log(
+    `Embedding index: ${stats.totalChunks} chunks total — embedded ${stats.embedded}, reused ${stats.reused}, pruned ${stats.pruned} (model ${stats.model}).`,
+  );
+}
+
+
+async function libraryEvalCommand() {
+  const cases = await loadRetrievalEvalCases();
+  const summaries = [];
+  summaries.push(
+    await runRetrievalEval(cases, (query) => hybridSearchReportLibrary(query, { topK: 12 }, { embeddingIndex: null }), "lexical-only"),
+  );
+  if (await isOllamaAvailable()) {
+    summaries.push(await runRetrievalEval(cases, (query) => hybridSearchReportLibrary(query, { topK: 12 }), "hybrid"));
+  } else {
+    console.warn("Ollama 未运行:跳过 hybrid 模式评测。");
+  }
+  const rendered = renderRetrievalEval(summaries);
+  await writeJsonFile("runs/library-retrieval-eval-latest.json", summaries);
+  console.log(rendered);
 }
 
 async function harness() {
@@ -1051,6 +1117,10 @@ async function feishuServer() {
       case "/ladder":
       case "/连板":
         return limitUpLadderCommand(arg);
+      case "/library": {
+        if (!arg.trim()) return "Usage: /library <关键词> — 检索本地已入库研报";
+        return renderHybridResults(arg.trim(), await hybridSearchReportLibrary(arg.trim()));
+      }
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -1289,6 +1359,10 @@ async function feishuServer() {
       "/portfolio-review": () => portfolioReview(),
       "/ladder": (arg: string) => limitUpLadderCommand(arg),
       "/连板": (arg: string) => limitUpLadderCommand(arg),
+      "/library": async (arg: string) => {
+        if (!arg.trim()) return "Usage: /library <关键词> — 检索本地已入库研报";
+        return renderHybridResults(arg.trim(), await hybridSearchReportLibrary(arg.trim()));
+      },
       "/evals": async () => {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -1352,6 +1426,18 @@ async function main() {
       break;
     case "resolutions-update":
       await resolutionsUpdate();
+      break;
+    case "library-search":
+      await librarySearchCommand();
+      break;
+    case "library-embed":
+      await libraryEmbedCommand();
+      break;
+    case "library-eval":
+      await libraryEvalCommand();
+      break;
+    case "reports-rechunk":
+      console.log(renderFfdRechunkRun(await rechunkFfdReports()));
       break;
     case "watchlist":
       await showWatchlist();

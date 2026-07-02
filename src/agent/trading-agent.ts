@@ -5,6 +5,7 @@ import { callFfdTool, renderFfdToolResultWithStatus, type FfdAllowedToolName } f
 import { fetchLimitUpLadder, formatLadderReport, normalizeLadderDate } from "../connectors/limit-up-ladder.js";
 import { methodologySummary } from "../methodology.js";
 import { loadBearCases } from "../research/debate/bear-case.js";
+import { hybridSearchReportLibrary, renderHybridResults } from "../research/library-hybrid.js";
 import { loadGraveyard } from "../research/graveyard.js";
 import { screenCandidates } from "../screener.js";
 import { loadSourceRegistry } from "../sources/registry.js";
@@ -122,6 +123,24 @@ export function createTradingAgentTools(): AgentTool[] {
         graveyard,
       });
       return textResult(run, JSON.stringify(run.candidates.slice(0, 5), null, 2));
+    },
+  };
+
+  const librarySearchTool: AgentTool = {
+    name: "search_report_library",
+    label: "Search Local Report Library",
+    description:
+      "Search the LOCAL accepted broker-report library (P1 evidence, Chinese) by keyword: company names, chokepoint terms (靶材/光芯片/玻璃基板...), industry topics. Use this BEFORE remote FFD research search when the question concerns industries or companies already under coverage. Results are P1 opinions requiring candidate-level P0 verification.",
+    parameters: Type.Object({
+      query: Type.String(),
+      topK: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })),
+      company: Type.Optional(Type.String()),
+      topic: Type.Optional(Type.String()),
+    }),
+    async execute(_toolCallId, params) {
+      const args = params as { query: string; topK?: number; company?: string; topic?: string };
+      const output = await hybridSearchReportLibrary(args.query, { topK: args.topK ?? 8, company: args.company, topic: args.topic });
+      return textResult({ results: output.results, mode: output.mode }, renderHybridResults(args.query, output));
     },
   };
 
@@ -490,6 +509,7 @@ export function createTradingAgentTools(): AgentTool[] {
 
   return [
     screenTool,
+    librarySearchTool,
     methodologyTool,
     sourcesTool,
     limitUpLadderTool,
