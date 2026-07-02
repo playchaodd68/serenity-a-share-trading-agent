@@ -2,14 +2,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Candidate, QuantCandidateBucket, QuantEvidenceGate, ScreenRun } from "../types.js";
 import type { QuantBacktestCandidate, QuantBacktestOptions, QuantBacktestSnapshot } from "./backtest.js";
+import { isAtLimitPrice, isSuspendedBar, isValidPrice, limitPriceFor, limitRatioFor, type ExecutionBar } from "./execution-constraints.js";
 
 export interface QuantHistoryPriceBar {
   code: string;
   date: string;
   open?: number;
+  high?: number;
+  low?: number;
   close: number;
   adjustedClose?: number;
   pctChange?: number;
+  volume?: number;
   tradable?: boolean;
   suspended?: boolean;
   limitUp?: boolean;
@@ -89,7 +93,10 @@ type CsvRow = Record<string, string>;
 const DATE_ALIASES = ["date", "trade_date", "tradedate", "日期", "交易日期"];
 const CODE_ALIASES = ["code", "symbol", "ts_code", "证券代码", "股票代码", "代码"];
 const OPEN_ALIASES = ["open", "开盘", "开盘价"];
+const HIGH_ALIASES = ["high", "最高", "最高价"];
+const LOW_ALIASES = ["low", "最低", "最低价"];
 const CLOSE_ALIASES = ["close", "收盘", "收盘价"];
+const VOLUME_ALIASES = ["volume", "vol", "成交量"];
 const ADJUSTED_CLOSE_ALIASES = ["adjustedclose", "adj_close", "adjclose", "复权收盘", "后复权收盘", "前复权收盘"];
 const PCT_CHANGE_ALIASES = ["pct_change", "pctchange", "pct_chg", "涨跌幅"];
 const TRADABLE_ALIASES = ["tradable", "可交易"];
@@ -177,6 +184,27 @@ function withInferredLimitStatus(bar: QuantHistoryPriceBar, inferLimitStatus: bo
   };
 }
 
+// 昨收与涨跌幅的一致性容差：超出视为数据断档（bars 非连续交易日），退回涨跌幅阈值法。
+const PCT_CHANGE_CONSISTENCY_TOLERANCE = 0.005;
+
+// 优先用整数分算术的理论涨跌停价精确推断（板块幅度由代码推断，ST 标记在历史数据中不可得，按板块默认值处理）。
+function withExactLimitStatus(bar: QuantHistoryPriceBar, prevClose: number | undefined, inferLimitStatus: boolean): QuantHistoryPriceBar {
+  if (!inferLimitStatus || (bar.limitUp != null && bar.limitDown != null)) return bar;
+  if (isValidPrice(prevClose)) {
+    const implied = bar.close / prevClose - 1;
+    const isContinuous = bar.pctChange == null || Math.abs(implied - bar.pctChange) <= PCT_CHANGE_CONSISTENCY_TOLERANCE;
+    if (isContinuous) {
+      const ratio = limitRatioFor(bar.code);
+      return {
+        ...bar,
+        limitUp: bar.limitUp ?? isAtLimitPrice(bar.close, limitPriceFor(prevClose, ratio, "up")),
+        limitDown: bar.limitDown ?? isAtLimitPrice(bar.close, limitPriceFor(prevClose, ratio, "down")),
+      };
+    }
+  }
+  return withInferredLimitStatus(bar, inferLimitStatus);
+}
+
 function coercePriceBar(row: Record<string, unknown>, source: string): QuantHistoryPriceBar | undefined {
   const code = normalizeCode(valueFor(row, CODE_ALIASES));
   const date = normalizeDate(valueFor(row, DATE_ALIASES));
@@ -189,9 +217,12 @@ function coercePriceBar(row: Record<string, unknown>, source: string): QuantHist
     code,
     date,
     open: parseNumber(valueFor(row, OPEN_ALIASES)),
+    high: parseNumber(valueFor(row, HIGH_ALIASES)),
+    low: parseNumber(valueFor(row, LOW_ALIASES)),
     close,
     adjustedClose: parseNumber(valueFor(row, ADJUSTED_CLOSE_ALIASES)),
     pctChange,
+    volume: parseNumber(valueFor(row, VOLUME_ALIASES)),
     tradable: tradable ?? (suspended == null ? undefined : !suspended),
     suspended,
     limitUp: parseBoolean(valueFor(row, LIMIT_UP_ALIASES)),
@@ -312,15 +343,16 @@ export async function loadScreenRunsFromDirectory(screenDir = "reports"): Promis
 function indexedBars(bars: QuantHistoryPriceBar[], options: EffectiveQuantHistoryAdapterOptions): Map<string, QuantHistoryPriceBar[]> {
   const byCode = new Map<string, QuantHistoryPriceBar[]>();
   for (const bar of bars) {
-    const normalized = withInferredLimitStatus({ ...bar, code: normalizeCode(bar.code), date: normalizeDate(bar.date) ?? bar.date }, options.inferLimitStatus);
+    const normalized = { ...bar, code: normalizeCode(bar.code), date: normalizeDate(bar.date) ?? bar.date };
     byCode.set(normalized.code, [...(byCode.get(normalized.code) ?? []), normalized]);
   }
   for (const [code, values] of byCode) {
+    // 先排序、用前一根K线昨收做精确涨跌停推断，再按日期窗口过滤，避免过滤丢失昨收上下文。
+    const sorted = [...values].sort((a, b) => a.date.localeCompare(b.date));
+    const inferred = sorted.map((bar, index) => withExactLimitStatus(bar, index > 0 ? sorted[index - 1].close : undefined, options.inferLimitStatus));
     byCode.set(
       code,
-      values
-        .filter((bar) => bar.date >= (options.dateFrom ?? "0000-00-00") && bar.date <= (options.dateTo ?? "9999-99-99"))
-        .sort((a, b) => a.date.localeCompare(b.date)),
+      inferred.filter((bar) => bar.date >= (options.dateFrom ?? "0000-00-00") && bar.date <= (options.dateTo ?? "9999-99-99")),
     );
   }
   return byCode;
@@ -404,6 +436,9 @@ function scoreFor(candidate: Candidate): number {
 }
 
 function toBacktestCandidate(candidate: Candidate, entry: QuantHistoryPriceBar, forwardReturn: number): QuantBacktestCandidate {
+  // 停牌口径：显式标志优先，否则由调仓日原始K线推断（零成交量且价格无波动）。
+  const bar: ExecutionBar = { open: entry.open, high: entry.high, low: entry.low, close: entry.close, volume: entry.volume };
+  const suspended = entry.suspended ?? (isSuspendedBar(bar) ? true : undefined);
   return {
     code: normalizeCode(candidate.stock.code),
     name: candidate.stock.name,
@@ -413,10 +448,11 @@ function toBacktestCandidate(candidate: Candidate, entry: QuantHistoryPriceBar, 
     bucket: bucketFor(candidate),
     evidenceGate: evidenceGateFor(candidate),
     forwardReturn,
-    tradable: entry.tradable ?? !entry.suspended,
-    suspended: entry.suspended,
+    tradable: entry.tradable ?? !suspended,
+    suspended,
     limitUp: entry.limitUp,
     limitDown: entry.limitDown,
+    bar,
   };
 }
 
