@@ -15,7 +15,7 @@ This project emits research candidates and evidence traces. It does not place or
 - Obsidian RAG initializer: default `/Users/apple/Documents/HenryXu/Serenity-A股产业投研`
 - Source registry: `data/source-registry.json`
 - Feishu webhook/callback support
-- Hermes-style local chatbot: CLI REPL and HTTP API backed by Pi Agent state
+- Hermes trading subagent: CLI one-shot/REPL, HTTP API, and Feishu routes backed by the same Pi Agent state
 - Default live model: DeepSeek V4 Pro through Pi's `deepseek` provider
 - Deterministic harness and tests
 
@@ -63,6 +63,9 @@ npm run review
 - `npm run feishu:event-relay`: consume Feishu bot events through `lark-cli` and forward them to the local callback server.
 - `npm run feishu:poller`: poll the configured private Feishu chat and forward new user messages to the local callback server.
 - `npm run agent`: print Pi agent model/tool metadata.
+- `npm run hermes:metadata`: print Hermes trading subagent identity, methodology/capability coverage, model, prompt hash, tools, and Feishu commands.
+- `npm run hermes:subagent -- --session <id> --message <question>`: run one Hermes trading subagent turn from a terminal or another agent.
+- `npm run hermes:chat`: start the local terminal chatbot through the replicated trading-agent runtime.
 - `npm run chat`: start a local terminal chatbot using the Pi agent runtime.
 - `npm run chat:server`: start a local HTTP chatbot at `http://localhost:8788`.
 - `npm run review`: typecheck, unit tests, and deterministic harness.
@@ -80,8 +83,12 @@ DEEPSEEK_API_KEY=<your key>
 Terminal mode:
 
 ```bash
+npm run hermes:metadata
+npm run hermes:subagent -- --session henry --message "用 Serenity 方法论筛选 A 股候选，并说明证据缺口"
 npm run chat -- --session henry
 ```
+
+`npm run hermes:subagent` is the one-shot Hermes subagent entrypoint. The REPL (`npm run chat` or `npm run hermes:chat`) and HTTP server use the same Pi agent factory, system prompt, tool list, session store, Chinese-normalization policy, and safety rules.
 
 HTTP mode:
 
@@ -99,6 +106,8 @@ The browser UI is available at `http://localhost:8788/`. Session transcripts are
 Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_TOKEN` and expose `npm run feishu:server` for callback commands:
 
 - `/ask <question>` or any natural-language message: chat with the Pi/DeepSeek trading agent
+- `/trading <question>` or `/hermes <question>`: explicit aliases for the Hermes trading subagent
+- `/hermes-metadata`: show the replicated subagent identity, model, prompt hash, capabilities, and tool list
 - `/reset`: clear the current Feishu chat session transcript
 - `/screen`
 - `/research-refresh`
@@ -123,6 +132,7 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/resolutions`
 - `/graveyard`
 - `/evals`
+- `/board <topic-or-mermaid>`: explicitly generate a Mermaid visual draft and optionally write it to a configured Feishu whiteboard
 - `/latest`
 - `/why <code>`
 - `/sources`
@@ -145,8 +155,14 @@ FEISHU_REPORT_NOTIFY_RECEIVE_ID=<optional report-only recipient id matching the 
 FEISHU_REPORT_NOTIFY_OPEN_ID=<optional user open_id for private report-library notifications>
 FEISHU_VERIFICATION_TOKEN=<event subscription verification token>
 FEISHU_PORT=8787
+FEISHU_DRY_RUN_REPLIES=false
+FEISHU_REPLY_RENDER_MODE=text
+FEISHU_WHITEBOARD_TOKEN=<optional existing Feishu whiteboard token for /board>
+FEISHU_WHITEBOARD_AS=user
+FEISHU_WHITEBOARD_OVERWRITE=false
 FEISHU_LOCAL_CALLBACK_URL=http://127.0.0.1:8787
 LARK_CLI_PROFILE=<optional lark-cli profile name>
+LARK_CLI_BIN=<optional absolute lark-cli path for launchd/background services>
 FEISHU_PRIVATE_CHAT_ID=<optional p2p chat id for private polling; falls back to FEISHU_NOTIFY_CHAT_ID>
 FEISHU_POLLER_INTERVAL_MS=8000
 FEISHU_POLLER_INITIAL_LOOKBACK_MINUTES=15
@@ -154,6 +170,12 @@ FEISHU_POLLER_STATE_PATH=runs/feishu-poller-state.json
 ```
 
 Then run `npm run feishu:server` and expose `http://localhost:8787` through a public HTTPS tunnel. In Feishu developer console, enable the bot capability, subscribe to `im.message.receive_v1`, and set the event request URL to the tunnel URL. Leave event encryption disabled unless the server is extended with decrypt support.
+
+For local callback routing tests without sending a real Feishu reply, run with `FEISHU_DRY_RUN_REPLIES=true`. The server will log the reply preview after routing through the Hermes trading subagent, but will not call the Feishu reply API.
+
+The default Feishu reply renderer remains plain text. Set `FEISHU_REPLY_RENDER_MODE=post` to send replies as rich post messages with Markdown content, or `FEISHU_REPLY_RENDER_MODE=card` to send interactive cards. This only changes the Feishu message container; it does not change the trading agent answer template.
+
+The `/board` command is opt-in visual output. When `FEISHU_WHITEBOARD_TOKEN` is unset, `/board <topic>` returns a Mermaid preview in chat. When the token is configured, it calls `lark-cli whiteboard +update` with `FEISHU_WHITEBOARD_AS` and appends to the board by default; set `FEISHU_WHITEBOARD_OVERWRITE=true` only when the command should replace existing board content.
 
 If a public tunnel is unavailable or unstable, run the local event relay instead:
 

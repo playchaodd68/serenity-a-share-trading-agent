@@ -29,10 +29,23 @@ export interface AppConfig {
   feishuReportNotifyReceiveId?: string;
   feishuReportNotifyReceiveIdType: "open_id" | "union_id" | "user_id" | "email";
   feishuReportNotifyOpenId?: string;
+  feishuDryRunReplies: boolean;
+  feishuReplyRenderMode: "text" | "post" | "card";
+  feishuWhiteboardToken?: string;
+  feishuWhiteboardAs: "user" | "bot";
+  feishuWhiteboardOverwrite: boolean;
+  larkCliProfile?: string;
+  larkCliBin?: string;
   feishuPort: number;
   chatPort: number;
   modelProvider: string;
   modelName: string;
+  thinkingLevel: "minimal" | "low" | "medium" | "high" | "xhigh";
+  aicodewithApiKey?: string;
+  aicodewithBaseUrl: string;
+  visionModel: string;
+  imageModel: string;
+  multimodalEnabled: boolean;
 }
 
 function numberEnv(name: string, fallback: number): number {
@@ -46,6 +59,26 @@ function feishuReportReceiveIdType(): "open_id" | "union_id" | "user_id" | "emai
   const raw = process.env.FEISHU_REPORT_NOTIFY_RECEIVE_ID_TYPE;
   if (raw === "open_id" || raw === "union_id" || raw === "user_id" || raw === "email") return raw;
   return "open_id";
+}
+
+function booleanEnv(name: string): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").toLowerCase());
+}
+
+function feishuReplyRenderMode(): "text" | "post" | "card" {
+  const raw = (process.env.FEISHU_REPLY_RENDER_MODE ?? "text").trim().toLowerCase();
+  if (raw === "post" || raw === "card") return raw;
+  return "text";
+}
+
+function tradingThinkingLevel(): "minimal" | "low" | "medium" | "high" | "xhigh" {
+  const raw = (process.env.TRADING_AGENT_THINKING_LEVEL ?? "xhigh").trim().toLowerCase();
+  if (raw === "minimal" || raw === "low" || raw === "medium" || raw === "high" || raw === "xhigh") return raw;
+  return "xhigh";
+}
+
+function feishuWhiteboardAs(): "user" | "bot" {
+  return process.env.FEISHU_WHITEBOARD_AS === "bot" ? "bot" : "user";
 }
 
 export function getConfig(): AppConfig {
@@ -72,10 +105,23 @@ export function getConfig(): AppConfig {
     feishuReportNotifyReceiveId: process.env.FEISHU_REPORT_NOTIFY_RECEIVE_ID,
     feishuReportNotifyReceiveIdType: feishuReportReceiveIdType(),
     feishuReportNotifyOpenId: process.env.FEISHU_REPORT_NOTIFY_OPEN_ID ?? process.env.FEISHU_NOTIFY_OPEN_ID,
+    feishuDryRunReplies: booleanEnv("FEISHU_DRY_RUN_REPLIES"),
+    feishuReplyRenderMode: feishuReplyRenderMode(),
+    feishuWhiteboardToken: process.env.FEISHU_WHITEBOARD_TOKEN,
+    feishuWhiteboardAs: feishuWhiteboardAs(),
+    feishuWhiteboardOverwrite: booleanEnv("FEISHU_WHITEBOARD_OVERWRITE"),
+    larkCliProfile: process.env.LARK_CLI_PROFILE,
+    larkCliBin: process.env.LARK_CLI_BIN,
     feishuPort: numberEnv("FEISHU_PORT", 8787),
     chatPort: numberEnv("CHAT_SERVER_PORT", 8788),
     modelProvider: process.env.TRADING_AGENT_MODEL_PROVIDER ?? "deepseek",
     modelName: process.env.TRADING_AGENT_MODEL ?? "deepseek-v4-pro",
+    thinkingLevel: tradingThinkingLevel(),
+    aicodewithApiKey: process.env.AICODEWITH_API_KEY,
+    aicodewithBaseUrl: process.env.AICODEWITH_BASE_URL ?? "https://api.aicodewith.com/v1",
+    visionModel: process.env.TRADING_AGENT_VISION_MODEL ?? "gpt-5.5",
+    imageModel: process.env.TRADING_AGENT_IMAGE_MODEL ?? "gpt-image-2",
+    multimodalEnabled: Boolean(process.env.AICODEWITH_API_KEY),
   };
 }
 

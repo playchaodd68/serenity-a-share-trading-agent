@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFeishuReplyPayload,
   createFeishuServer,
   extractFeishuMessageEvent,
   formatFeishuTextChunks,
   handleFeishuCallback,
+  normalizeFeishuReplyRenderMode,
+  replyFeishuMessage,
   sendFeishuOpenIdText,
   sendFeishuTextByReceiveId,
   splitFeishuText,
@@ -76,6 +79,29 @@ describe("Feishu callbacks", () => {
     });
   });
 
+  it("extracts text from Feishu post message receive events", () => {
+    const event = extractFeishuMessageEvent({
+      header: { event_type: "im.message.receive_v1", token: "token" },
+      event: {
+        sender: { sender_id: { open_id: "ou_x" } },
+        message: {
+          message_id: "om_post",
+          chat_id: "oc_x",
+          chat_type: "p2p",
+          message_type: "post",
+          content: JSON.stringify({
+            content: [[{ tag: "text", text: "/board 比较半导体设备、先进封装、AI服务器产业链" }]],
+          }),
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      messageId: "om_post",
+      text: "/board 比较半导体设备、先进封装、AI服务器产业链",
+    });
+  });
+
   it("does not reply when group messages are ignored by the handler", async () => {
     const calls: any[] = [];
     const originalFetch = globalThis.fetch;
@@ -119,6 +145,108 @@ describe("Feishu callbacks", () => {
     }
   });
 
+  it("supports dry-run replies for local Feishu callback routing tests", async () => {
+    const calls: any[] = [];
+    const logs: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ code: 0, msg: "ok" }), { status: 200 });
+    }) as typeof fetch;
+    const server = createFeishuServer({
+      port: 0,
+      appId: "app",
+      appSecret: "secret",
+      dryRunReplies: true,
+      commands: {},
+      onMessage: () => "Hermes trading subagent metadata",
+      logger: {
+        info: (message: string) => logs.push(message),
+        error: (message: string) => logs.push(message),
+      },
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+      const response = await originalFetch(`http://127.0.0.1:${address.port}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          header: { event_type: "im.message.receive_v1", token: "token" },
+          event: {
+            sender: { sender_id: { open_id: "ou_x" } },
+            message: {
+              message_id: "om_dry",
+              chat_id: "oc_x",
+              chat_type: "p2p",
+              content: JSON.stringify({ text: "/hermes-metadata" }),
+            },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(calls).toHaveLength(0);
+      expect(logs.join("\n")).toContain("Feishu dry-run reply");
+      expect(logs.join("\n")).toContain("Hermes trading subagent metadata");
+    } finally {
+      server.close();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("deduplicates repeated Feishu message events by message id", async () => {
+    let handled = 0;
+    const logs: string[] = [];
+    const server = createFeishuServer({
+      port: 0,
+      dryRunReplies: true,
+      commands: {},
+      onMessage: () => {
+        handled += 1;
+        return "ok";
+      },
+      logger: {
+        info: (message: string) => logs.push(message),
+        error: (message: string) => logs.push(message),
+      },
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+      const body = JSON.stringify({
+        header: { event_type: "im.message.receive_v1", token: "token" },
+        event: {
+          sender: { sender_id: { open_id: "ou_x" } },
+          message: {
+            message_id: "om_duplicate",
+            chat_id: "oc_x",
+            chat_type: "p2p",
+            content: JSON.stringify({ text: "hello" }),
+          },
+        },
+      });
+      const first = await fetch(`http://127.0.0.1:${address.port}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      const second = await fetch(`http://127.0.0.1:${address.port}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      await expect(second.json()).resolves.toEqual({ ok: true, duplicate: true });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(handled).toBe(1);
+      expect(logs.join("\n")).toContain("Feishu duplicate message ignored");
+    } finally {
+      server.close();
+    }
+  });
+
   it("splits long outgoing text without dropping content or adding truncation hints", () => {
     const text = `${"a".repeat(80)}\n\n${"b".repeat(80)}\n${"c".repeat(80)}`;
     const chunks = splitFeishuText(text, 100);
@@ -128,6 +256,110 @@ describe("Feishu callbacks", () => {
     const formatted = formatFeishuTextChunks(text, 120);
     expect(formatted.join("\n")).not.toContain("已截断");
     expect(formatted[0]).toMatch(/^\[1\/\d+\]\n/);
+  });
+
+  it("builds optional rich reply payloads while preserving text as the default", () => {
+    expect(normalizeFeishuReplyRenderMode(undefined)).toBe("text");
+    expect(normalizeFeishuReplyRenderMode("unknown")).toBe("text");
+    expect(normalizeFeishuReplyRenderMode("post")).toBe("post");
+    expect(normalizeFeishuReplyRenderMode("card")).toBe("card");
+
+    const textPayload = buildFeishuReplyPayload("產業邏輯", "text");
+    expect(textPayload.msg_type).toBe("text");
+    expect(JSON.parse(textPayload.content).text).toBe("产业逻辑");
+
+    const postPayload = buildFeishuReplyPayload("**產業邏輯**", "post");
+    expect(postPayload.msg_type).toBe("post");
+    const postContent = JSON.parse(postPayload.content);
+    expect(postContent.zh_cn.content[0][0]).toEqual({ tag: "md", text: "**产业逻辑**" });
+
+    const cardPayload = buildFeishuReplyPayload("## 產業邏輯", "card");
+    expect(cardPayload.msg_type).toBe("interactive");
+    const cardContent = JSON.parse(cardPayload.content);
+    expect(cardContent.elements[0]).toEqual({ tag: "markdown", content: "## 产业逻辑" });
+  });
+
+  it("sends configured rich replies through the Feishu reply API", async () => {
+    const calls: any[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("/auth/v3/tenant_access_token/internal")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "token-render", expire: 7200 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ code: 0, msg: "ok" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await replyFeishuMessage({
+        appId: "app-render",
+        appSecret: "secret-render",
+        messageId: "om_render",
+        chatId: "oc_render",
+        text: "| 項目 | 結論 |\n| --- | --- |\n| 產業 | 景氣 |",
+        renderMode: "post",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const replyCall = calls.find((call) => String(call.url).includes("/im/v1/messages/om_render/reply"));
+    expect(replyCall).toBeTruthy();
+    const body = JSON.parse(String(replyCall.init.body));
+    expect(body.msg_type).toBe("post");
+    const content = JSON.parse(body.content);
+    expect(content.zh_cn.content[0][0].tag).toBe("md");
+    expect(content.zh_cn.content[0][0].text).toContain("| 项目 | 结论 |");
+  });
+
+  it("uses the configured render mode for Feishu message-event replies", async () => {
+    const calls: any[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("/auth/v3/tenant_access_token/internal")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "token-server-render", expire: 7200 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ code: 0, msg: "ok" }), { status: 200 });
+    }) as typeof fetch;
+    const server = createFeishuServer({
+      port: 0,
+      appId: "app-server-render",
+      appSecret: "secret-server-render",
+      replyRenderMode: "card",
+      commands: {},
+      onMessage: () => "## 產業邏輯",
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+      const response = await originalFetch(`http://127.0.0.1:${address.port}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          header: { event_type: "im.message.receive_v1", token: "token" },
+          event: {
+            sender: { sender_id: { open_id: "ou_x" } },
+            message: {
+              message_id: "om_card_render",
+              chat_id: "oc_x",
+              chat_type: "p2p",
+              content: JSON.stringify({ text: "hello" }),
+            },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      server.close();
+      globalThis.fetch = originalFetch;
+    }
+
+    const replyCall = calls.find((call) => String(call.url).includes("/im/v1/messages/om_card_render/reply"));
+    expect(replyCall).toBeTruthy();
+    const body = JSON.parse(String(replyCall.init.body));
+    expect(body.msg_type).toBe("interactive");
+    expect(JSON.parse(body.content).elements[0].content).toBe("## 产业逻辑");
   });
 
   it("sends proactive private messages by open_id", async () => {
