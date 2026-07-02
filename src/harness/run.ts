@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { TRADING_AGENT_SYSTEM_PROMPT } from "../agent/trading-agent.js";
+import { createTradingAgentTools, TRADING_AGENT_SYSTEM_PROMPT } from "../agent/trading-agent.js";
 import { handleFeishuCallback } from "../feishu/feishu.js";
 import { initializeKnowledgebase } from "../rag/obsidian.js";
 import { renderScreenReport } from "../report.js";
@@ -109,6 +109,14 @@ export async function runHarness(): Promise<HarnessResult> {
       "confidence ceiling trace present",
       run.candidates.every((candidate) => candidate.trace.confidenceCeiling != null),
       "rating constraints wired",
+    ),
+  );
+  const agentToolNames = createTradingAgentTools().map((tool) => tool.name.toLowerCase());
+  checks.push(
+    check(
+      "position firewall: agent exposes no holdings tool",
+      agentToolNames.every((name) => !name.includes("portfolio") && !name.includes("holding") && !name.includes("position")),
+      `tools=${agentToolNames.length}`,
     ),
   );
   checks.push(

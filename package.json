@@ -13,6 +13,7 @@
     "screen": "tsx src/cli.ts screen",
     "research:refresh": "tsx src/cli.ts research-refresh",
     "research:bear": "tsx src/cli.ts research-bear",
+    "portfolio:review": "tsx src/cli.ts portfolio-review",
     "watchlist": "tsx src/cli.ts watchlist",
     "calibration": "tsx src/cli.ts calibration",
     "evals": "tsx src/cli.ts evals",

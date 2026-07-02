@@ -1,0 +1,11 @@
+{
+  "updatedAt": "2026-07-02T00:00:00.000Z",
+  "positions": [
+    {
+      "code": "300308",
+      "name": "示例持仓",
+      "weight": 0.1,
+      "note": "示例条目：复制本文件为 data/portfolio.json 后替换为真实持仓。"
+    }
+  ]
+}

@@ -30,6 +30,8 @@ import {
 } from "./research/debate/bear-case.js";
 import { renderVerdict, synthesizeVerdict } from "./research/debate/verdict.js";
 import { createDeepSeekClient } from "./research/debate/llm-client.js";
+import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
+import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
 import { renderAnswerSafetyEvals, renderSycophancyEvals, runAnswerSafetyEvals, runSycophancyPromptEvals } from "./research/evals.js";
 import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
 import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
@@ -601,6 +603,23 @@ async function researchBear(codeArg?: string) {
   if (record.status !== "completed") process.exitCode = 1;
 }
 
+
+async function portfolioReview(): Promise<string> {
+  const { portfolio, errors } = await loadPortfolio();
+  if (!portfolio) {
+    return [`持仓文件校验失败（${PORTFOLIO_PATH}）：`, ...errors.map((error) => `- ${error}`)].join("\n");
+  }
+  const [latestRun, watchlist, bearCases, graveyard] = await Promise.all([
+    findLatestRun(),
+    loadWatchlist(),
+    loadBearCases(),
+    loadGraveyard(),
+  ]);
+  const report = buildPositionOverlay({ portfolio, latestRun, watchlist, bearCases, graveyard });
+  await writeJsonFile("runs/position-overlay-latest.json", report);
+  return renderPositionOverlay(report);
+}
+
 async function harness() {
   const result = await runHarness();
   for (const item of result.checks) {
@@ -937,6 +956,8 @@ async function feishuServer() {
         const verdict = synthesizeVerdict(candidate, record.report);
         return [renderBearCase(record), "", renderVerdict(verdict)].join("\n");
       }
+      case "/portfolio-review":
+        return portfolioReview();
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -1062,6 +1083,9 @@ async function main() {
       break;
     case "research-bear":
       await researchBear();
+      break;
+    case "portfolio-review":
+      console.log(await portfolioReview());
       break;
     case "watchlist":
       await showWatchlist();
