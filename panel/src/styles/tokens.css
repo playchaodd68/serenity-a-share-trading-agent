@@ -1,0 +1,67 @@
+/* Adapted from tickflow-stock-panel (MIT) — 语义色 token 架构、分层圆角、smooth 缓动、等宽数字策略。 */
+/* 本文件为设计 token 单一事实来源（蓝图 §1.2），tailwind.config.ts 仅做变量映射。 */
+
+:root {
+  /* ===== 色板（oklch；亮色映射预留，v1 只发暗色） ===== */
+  /* 层级 */
+  --color-base:    oklch(16% 0.012 265);   /* 页面底，近黑带冷调 */
+  --color-surface: oklch(20% 0.014 265);   /* 卡片 */
+  --color-raised:  oklch(24% 0.016 265);   /* 悬浮卡 / hover 抬升 */
+  --color-overlay: oklch(27% 0.018 265);   /* 对话框 / 抽屉 */
+  --color-paper:   oklch(94% 0.005 90);    /* 报告阅读面（局部亮底） */
+  --color-paper-ink: oklch(24% 0.01 265);
+  /* 线 */
+  --color-line:        oklch(32% 0.012 265);
+  --color-line-strong: oklch(42% 0.014 265);
+  /* 文字 */
+  --color-ink:    oklch(96% 0.005 265);    /* 主文字 */
+  --color-ink-2:  oklch(78% 0.010 265);    /* 次级 */
+  --color-ink-3:  oklch(62% 0.012 265);    /* muted */
+  /* 语义（bull/bear 仅用于价格与收益，禁用于 UI 状态） */
+  --color-accent:  oklch(65% 0.19 255);    /* 电光蓝，交互/链接/选中 */
+  --color-bull:    oklch(60% 0.19 25);     /* A股红涨 */
+  --color-bear:    oklch(62% 0.14 160);    /* A股绿跌 */
+  --color-warning: oklch(72% 0.16 70);     /* 琥珀；亦为"拥挤/负面信号"页面框架色 */
+  --color-danger:  oklch(60% 0.19 25);
+  --color-violet:  oklch(60% 0.18 295);    /* 品牌，仅 logo/wordmark */
+  /* 图表专用（哑光蜡烛，源自参考项目策略） */
+  --chart-bull:  oklch(55% 0.13 25);
+  --chart-bear:  oklch(56% 0.10 160);
+  --chart-grid:  oklch(100% 0 0 / 0.04);
+  --chart-ma-1: var(--color-ink-3);
+  --chart-ma-2: var(--color-accent);
+  --chart-ma-3: oklch(70% 0.15 55);
+  --chart-ma-4: var(--color-violet);
+
+  /* ===== 字体 ===== */
+  --font-sans: Inter, "HarmonyOS Sans SC", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
+  --font-reading: "Source Han Serif SC", Georgia, serif; /* 仅报告阅读面可选 */
+
+  /* ===== 字号（clamp 尺度；最小 11px，修正参考项目 9-10px） ===== */
+  --text-2xs:  0.6875rem;                            /* 11px 徽标/时间戳，下限 */
+  --text-xs:   0.75rem;                              /* 12px 密表 */
+  --text-sm:   0.8125rem;                            /* 13px 表格主体/导航 */
+  --text-base: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);  /* UI 正文 */
+  --text-read: clamp(0.9375rem, 0.9rem + 0.25vw, 1.0625rem);  /* 报告正文 15→17px */
+  --text-lg:   1.125rem;                             /* 页面标题 */
+  --text-xl:   clamp(1.25rem, 1.1rem + 0.6vw, 1.5rem);        /* 区块大标题 */
+  --text-display: clamp(1.75rem, 1.2rem + 2.2vw, 2.75rem);    /* KPI display 数字 */
+
+  /* ===== 间距（8pt 基线 + 密度区） ===== */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-8: 48px;
+  --space-section: clamp(2rem, 1.5rem + 2vw, 3.5rem);
+
+  /* ===== 圆角（分层，源自参考） ===== */
+  --radius-input: 4px; --radius-btn: 6px; --radius-card: 8px;
+  --radius-dialog: 12px; --radius-pill: 999px;
+
+  /* ===== 深度 ===== */
+  --shadow-raised: 0 4px 16px oklch(0 0 0 / 0.35);
+  --shadow-overlay: 0 12px 40px oklch(0 0 0 / 0.5);
+
+  /* ===== 动效 ===== */
+  --duration-fast: 150ms; --duration-normal: 250ms; --duration-slow: 400ms;
+  --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+}

@@ -28,6 +28,7 @@ import {
 } from "./feishu/whiteboard.js";
 import { createTradingAgent, TRADING_AGENT_SYSTEM_PROMPT } from "./agent/trading-agent.js";
 import { runInteractiveChat, startChatHttpServer } from "./chatbot/chatbot.js";
+import { startPanelServer } from "./panel/server.js";
 import { createHermesTradingFeishuRouter } from "./hermes/feishu-subagent.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
@@ -1424,6 +1425,12 @@ async function main() {
         await new Promise<void>((resolve) => server.on("close", resolve));
       }
       break;
+    case "panel-server":
+      {
+        const server = await startPanelServer();
+        await new Promise<void>((resolve) => server.on("close", resolve));
+      }
+      break;
     case "agent":
       await showAgent();
       break;
@@ -1437,7 +1444,7 @@ async function main() {
       console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|panel-server|agent>");
       process.exitCode = 1;
   }
 }

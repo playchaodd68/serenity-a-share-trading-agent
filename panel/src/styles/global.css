@@ -1,0 +1,73 @@
+/* Adapted from tickflow-stock-panel (MIT) — .num 等宽数字工具类、细滚动条样式；
+ * reduced-motion 与统一 focus-visible 为本项目补充。 */
+
+@import "./tokens.css";
+@import "./typography.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 价格 / 数字容器一律等宽 + tabular-nums */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 细滚动条 + accent hover（源自参考项目） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent);
+  background-clip: content-box;
+}
+
+/* 默认 1px 边框色（暗色用边框分层） */
+* {
+  border-color: var(--color-line);
+}
+
+/* 统一 focus-visible：2px accent 外框 + 2px offset */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+body {
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  /* 暗色模式不用 antialiased — 让字形保持饱满，不发虚（源自参考项目） */
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+/* prefers-reduced-motion：关闭级联入场与抬升动效 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

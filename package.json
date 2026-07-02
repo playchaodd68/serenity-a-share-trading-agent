@@ -45,7 +45,10 @@
     "hermes:metadata": "tsx src/hermes/cli.ts --metadata",
     "hermes:chat": "tsx src/cli.ts chat",
     "chat": "tsx src/cli.ts chat",
-    "chat:server": "tsx src/cli.ts chat-server"
+    "chat:server": "tsx src/cli.ts chat-server",
+    "panel:dev": "npm --prefix panel run dev",
+    "panel:build": "npm --prefix panel run build",
+    "panel:server": "tsx src/cli.ts panel-server"
   },
   "keywords": [
     "a-share",
