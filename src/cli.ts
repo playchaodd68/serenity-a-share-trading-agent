@@ -1264,12 +1264,22 @@ async function feishuServer() {
       "/calibration": async () => {
         const snapshot = await buildCalibrationSnapshot();
         await writeCalibrationSnapshot(snapshot);
-        return renderCalibrationSnapshot(snapshot);
+        const slice = await sycophancySliceReport();
+        return slice ? [renderCalibrationSnapshot(snapshot), "", slice].join("\n") : renderCalibrationSnapshot(snapshot);
       },
+      "/resolutions": () => resolutionsReport(),
+      "/graveyard": () => graveyardReport(),
+      "/bear": async (arg: string) => {
+        if (!arg.trim()) return "Usage: /bear <code-or-name>";
+        return (await runBearForCode(arg.trim())).text;
+      },
+      "/portfolio-review": () => portfolioReview(),
       "/evals": async () => {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
-        return renderAnswerSafetyEvals(results);
+        const sycophancy = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
+        await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancy);
+        return [renderAnswerSafetyEvals(results), renderSycophancyEvals(sycophancy)].join("\n\n");
       },
       "/quant-adapt-history": (arg: string) => quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []),
       "/quant-backtest": (arg: string) => quantBacktestCommand(arg.trim() || undefined),

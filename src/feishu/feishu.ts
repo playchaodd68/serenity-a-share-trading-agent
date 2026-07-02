@@ -338,7 +338,7 @@ export async function handleFeishuCallback(
     return {
       status: 200,
       body: {
-        text: "Supported commands: /ask <question>, /reset, /screen, /research-refresh, /ffd-health, /ffd <query>, /ffd-industry <query>, /ffd-research <keyword>, /ffd-news <keyword>, /ffd-smoke, /ffd-signal <mode> <query>, /ffd-auto-rules, /reports-convert, /reports-review, /reports-accept <id>, /reports-accept --force <id>, /reports-accept-quality, /reports-reject <id>, /archive-obsidian, /watchlist, /calibration, /evals, /board <topic-or-mermaid>, /latest, /why <code>, /sources, /methodology, /doctor, /harness",
+        text: "Supported commands: /ask <question>, /reset, /screen, /research-refresh, /ffd-health, /ffd <query>, /ffd-industry <query>, /ffd-research <keyword>, /ffd-news <keyword>, /ffd-smoke, /ffd-signal <mode> <query>, /ffd-auto-rules, /reports-convert, /reports-review, /reports-accept <id>, /reports-accept --force <id>, /reports-accept-quality, /reports-reject <id>, /archive-obsidian, /watchlist, /bear <code>, /portfolio-review, /calibration, /resolutions, /graveyard, /evals, /board <topic-or-mermaid>, /latest, /why <code>, /sources, /methodology, /doctor, /harness",
       },
     };
   }
