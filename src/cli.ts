@@ -47,7 +47,7 @@ import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position
 import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
 import { hybridSearchReportLibrary, renderHybridResults } from "./research/library-hybrid.js";
 import { buildEmbeddingIndex } from "./research/library-index.js";
-import { createOllamaEmbeddingClient, isOllamaAvailable } from "./research/embeddings.js";
+import { isOllamaAvailable, resolveEmbeddingRuntime } from "./research/embeddings.js";
 import { loadRetrievalEvalCases, renderRetrievalEval, runRetrievalEval } from "./research/library-eval.js";
 import { rechunkFfdReports, renderFfdRechunkRun } from "./research/report-library.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
@@ -359,11 +359,12 @@ function renderFfdReportEnhanceRun(run: FfdReportLibraryRun): string {
 // retrieval degrades to lexical-only when the index is stale or missing, never fails.
 async function refreshLibraryEmbeddingsBestEffort(context: string): Promise<void> {
   try {
-    if (!(await isOllamaAvailable())) {
-      console.warn(`library embedding refresh skipped (${context}): Ollama not running; retrieval stays lexical until npm run library:embed.`);
+    const runtime = await resolveEmbeddingRuntime();
+    if (!runtime.client) {
+      console.warn(`library embedding refresh skipped (${context}): ${runtime.reason}`);
       return;
     }
-    const stats = await buildEmbeddingIndex(createOllamaEmbeddingClient());
+    const stats = await buildEmbeddingIndex(runtime.client);
     console.log(`library embeddings refreshed (${context}): +${stats.embedded} embedded, ${stats.reused} reused, ${stats.pruned} pruned.`);
   } catch (error) {
     console.warn(`library embedding refresh failed (${context}): ${error instanceof Error ? error.message : String(error)}`);
@@ -723,12 +724,13 @@ async function librarySearchCommand(queryArg?: string) {
 }
 
 async function libraryEmbedCommand() {
-  if (!(await isOllamaAvailable())) {
-    console.error("Ollama 未运行：先启动 Ollama（并确认已 pull bge-m3），再运行 npm run library:embed。");
+  const runtime = await resolveEmbeddingRuntime();
+  if (!runtime.client) {
+    console.error(`向量后端不可用：${runtime.reason}`);
     process.exitCode = 1;
     return;
   }
-  const client = createOllamaEmbeddingClient();
+  const client = runtime.client;
   console.log(`Building embedding index via ${client.label}...`);
   const stats = await buildEmbeddingIndex(client);
   console.log(

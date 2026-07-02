@@ -1,4 +1,4 @@
-import { createOllamaEmbeddingClient, isOllamaAvailable, type EmbeddingClient } from "./embeddings.js";
+import { resolveEmbeddingRuntime, type EmbeddingClient } from "./embeddings.js";
 import { fuseRrf, loadEmbeddingIndex, vectorSearch, type EmbeddingIndexFile } from "./library-index.js";
 import {
   getLibrarySearchIndex,
@@ -64,20 +64,24 @@ export async function hybridSearchReportLibrary(
   const lexical = scoreBm25(searchIndex, query).slice(0, CANDIDATE_POOL);
 
   const embeddingIndex = deps.embeddingIndex !== undefined ? deps.embeddingIndex : await loadEmbeddingIndex();
-  const ollamaReady = deps.embeddingClient != null || (deps.ollamaAvailable ?? (embeddingIndex != null && (await isOllamaAvailable())));
+  let client = deps.embeddingClient ?? null;
+  let unavailableReason: string | undefined;
+  if (embeddingIndex && client == null) {
+    const runtime = await resolveEmbeddingRuntime();
+    client = runtime.client;
+    unavailableReason = runtime.reason;
+  }
 
-  if (!embeddingIndex || !ollamaReady) {
+  if (!embeddingIndex || client == null) {
     return {
       mode: "lexical-only",
       results: selectWithFilters(lexical, filters),
       reportCount: searchIndex.reportCount,
       note: !embeddingIndex
         ? "未找到向量索引（先运行 npm run library:embed）。"
-        : "Ollama 未运行，本次退化为词法检索。",
+        : `向量后端不可用（${unavailableReason ?? "unknown"}），本次退化为词法检索。`,
     };
   }
-
-  const client = deps.embeddingClient ?? createOllamaEmbeddingClient();
   let queryVector: number[];
   try {
     [queryVector] = await client.embed([query]);
