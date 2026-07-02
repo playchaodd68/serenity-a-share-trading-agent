@@ -6,7 +6,10 @@ import { fetchCninfoAnnualReportSourcesForCandidates } from "./connectors/cninfo
 import { callFfdTool, renderFfdToolResultWithStatus } from "./connectors/ffd.js";
 import { fetchTopicDiggPostSummaries, serenityPostsToSources } from "./connectors/serenity.js";
 import { ingestLocalReportSources } from "./connectors/reports.js";
-import { createFeishuServer } from "./feishu/feishu.js";
+import { createFeishuServer, normalizeFeishuReplyRenderMode, replyFeishuMessage } from "./feishu/feishu.js";
+import type { FeishuMessageEvent } from "./feishu/feishu.js";
+import { downloadFeishuMessageImage, uploadFeishuImage, sendFeishuImageToChat, sendFeishuTextToChat } from "./feishu/media.js";
+import { analyzeImagesWithVision, generateImage, downloadImageBytes, type AicodewithMultimodalConfig } from "./multimodal/aicodewith.js";
 import { explainCandidate, findLatestRun, renderFeishuSummary, writeScreenReport } from "./report.js";
 import { initializeKnowledgebase, syncKnowledgebaseSources } from "./rag/obsidian.js";
 import { screenCandidates } from "./screener.js";
@@ -15,8 +18,16 @@ import { EASTMONEY_SOURCE } from "./connectors/eastmoney.js";
 import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuChatText, sendFeishuMarkdown, sendFeishuOpenIdText, sendFeishuTextByReceiveId } from "./feishu/feishu.js";
+import {
+  buildTradingWhiteboardPrompt,
+  extractMermaidCode,
+  renderFeishuWhiteboardHelp,
+  renderFeishuWhiteboardPreview,
+  updateFeishuWhiteboardMermaid,
+} from "./feishu/whiteboard.js";
 import { createTradingAgent, TRADING_AGENT_SYSTEM_PROMPT } from "./agent/trading-agent.js";
-import { createTradingChatSession, promptTradingChatSession, runInteractiveChat, saveChatSession, startChatHttpServer, type TradingChatSession } from "./chatbot/chatbot.js";
+import { runInteractiveChat, startChatHttpServer } from "./chatbot/chatbot.js";
+import { createHermesTradingFeishuRouter } from "./hermes/feishu-subagent.js";
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
@@ -688,45 +699,17 @@ async function quantAdaptHistoryCommand(args: string[]): Promise<string> {
 
 async function feishuServer() {
   const config = getConfig();
-  const chatSessions = new Map<string, TradingChatSession>();
-
-  async function getChatSession(sessionId: string) {
-    const existing = chatSessions.get(sessionId);
-    if (existing) return existing;
-    const session = await createTradingChatSession(`feishu-${sessionId}`);
-    chatSessions.set(sessionId, session);
-    return session;
-  }
-
-  async function askAgent(sessionId: string, question: string) {
-    if (!question.trim()) return "Usage: /ask <question>";
-    if (shouldRouteDirectlyToFfd(question)) return runFfdNaturalQuery(question);
-    const session = await getChatSession(sessionId);
-    const localizedQuestion = [
-      "请默认使用简体中文回答，除非我明确要求其他语言；不要使用繁体字。",
-      "",
-      question,
-    ].join("\n");
-    const result = await promptTradingChatSession(session, localizedQuestion);
-    return result.errorMessage ? `Agent error: ${result.errorMessage}` : result.reply;
-  }
-
-  async function resetAgent(sessionId: string) {
-    const session = await getChatSession(sessionId);
-    session.agent.reset();
-    await saveChatSession(session);
-    return "Feishu agent session reset.";
-  }
+  const tradingFeishuRouter = createHermesTradingFeishuRouter({
+    directFfdQuery: runFfdNaturalQuery,
+    shouldRouteDirectlyToFfd,
+  });
 
   async function runFeishuText(text: string, sessionId: string) {
     const [command = "", ...rest] = text.trim().split(/\s+/);
     const arg = rest.join(" ");
+    const routed = await tradingFeishuRouter.handleAgentCommand(command, arg, sessionId);
+    if (routed !== undefined) return routed;
     switch (command.toLowerCase()) {
-      case "/ask":
-      case "/chat":
-        return askAgent(sessionId, arg);
-      case "/reset":
-        return resetAgent(sessionId);
       case "/screen":
         await screen();
         return "Screening completed. Check reports/ and runs/.";
@@ -783,6 +766,9 @@ async function feishuServer() {
         return quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []);
       case "/quant-backtest":
         return quantBacktestCommand(arg.trim() || undefined);
+      case "/board":
+      case "/whiteboard":
+        return runFeishuWhiteboardCommand(arg, sessionId);
       case "/sources": {
         const sources = await loadSourceRegistry();
         return sources.slice(0, 20).map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n");
@@ -806,7 +792,49 @@ async function feishuServer() {
       case "/doctor":
         return renderDoctorReport(await diagnoseRuntime());
       default:
-        return askAgent(sessionId, text);
+        return tradingFeishuRouter.ask(sessionId, text);
+    }
+  }
+
+  async function runFeishuWhiteboardCommand(input: string, sessionId: string): Promise<string> {
+    const trimmed = input.trim();
+    const whiteboardToken = config.feishuWhiteboardToken?.trim();
+    if (!trimmed) return renderFeishuWhiteboardHelp(Boolean(whiteboardToken));
+
+    const suppliedMermaid = extractMermaidCode(trimmed);
+    const mermaid = suppliedMermaid || extractMermaidCode(await tradingFeishuRouter.ask(`${sessionId}:whiteboard`, buildTradingWhiteboardPrompt(trimmed)));
+    if (!mermaid) {
+      return "Whiteboard generation failed: the model did not return a Mermaid diagram. Try /board with a more structured topic, or paste Mermaid directly after /board.";
+    }
+
+    if (!whiteboardToken) {
+      return renderFeishuWhiteboardPreview(mermaid, "FEISHU_WHITEBOARD_TOKEN is not configured; returning a preview only.");
+    }
+
+    try {
+      const result = await updateFeishuWhiteboardMermaid({
+        whiteboardToken,
+        mermaid,
+        as: config.feishuWhiteboardAs,
+        overwrite: config.feishuWhiteboardOverwrite,
+        larkCliBin: config.larkCliBin,
+        profile: config.larkCliProfile,
+      });
+      return [
+        "Feishu whiteboard updated.",
+        `Identity: ${result.as}`,
+        `Mode: ${result.overwrite ? "overwrite" : "append"}`,
+        "",
+        "```mermaid",
+        mermaid,
+        "```",
+      ].join("\n");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return renderFeishuWhiteboardPreview(
+        mermaid,
+        `Whiteboard Mermaid was generated, but writing to Feishu failed: ${message.replaceAll(whiteboardToken, "[REDACTED_WHITEBOARD_TOKEN]")}`,
+      );
     }
   }
 
@@ -818,12 +846,122 @@ async function feishuServer() {
     return explicitCommand || message.mentionedBot;
   }
 
+  const VISION_SYSTEM_PROMPT =
+    "你是 Serenity A股产业研究助理。用户发来的图片多为 K线/行情截图、券商研报截图、产业链或财务图表。请用简体中文:① 客观读出图中关键信息(标的、数字、趋势、结构);② 给出专业解读(对A股投资或产业的含义);③ 标注不确定或需进一步核实之处。不要编造图中不存在的数据。";
+
+  const DRAW_COMMANDS = new Set(["/draw", "/image", "/img", "/画图", "/生图", "/画"]);
+
+  function redactForChat(text: string): string {
+    return text
+      .replace(/sk-[A-Za-z0-9_-]{10,}/g, "[KEY]")
+      .replace(/ffd-[A-Za-z0-9_-]+/g, "[KEY]")
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [KEY]")
+      .slice(0, 300);
+  }
+
+  function multimodalConfig(): AicodewithMultimodalConfig {
+    return {
+      apiKey: config.aicodewithApiKey ?? "",
+      baseUrl: config.aicodewithBaseUrl,
+      visionModel: config.visionModel,
+      imageModel: config.imageModel,
+    };
+  }
+
+  async function runFeishuVision(message: FeishuMessageEvent): Promise<void> {
+    const appId = config.feishuAppId;
+    const appSecret = config.feishuAppSecret;
+    const chatId = message.chatId ?? message.sessionId;
+    if (!appId || !appSecret) return;
+    if (!config.multimodalEnabled || !config.aicodewithApiKey) {
+      await sendFeishuTextToChat(appId, appSecret, chatId, "图片分析未启用:请在 .env 配置 AICODEWITH_API_KEY。");
+      return;
+    }
+    try {
+      await sendFeishuTextToChat(appId, appSecret, chatId, "🔍 正在分析图片,问题较复杂时约需 1–3 分钟…");
+      const images = [];
+      for (const key of (message.imageKeys ?? []).slice(0, 4)) {
+        images.push(await downloadFeishuMessageImage(appId, appSecret, message.messageId, key));
+      }
+      if (images.length === 0) {
+        await sendFeishuTextToChat(appId, appSecret, chatId, "没有读到可分析的图片。");
+        return;
+      }
+      const question =
+        message.text.trim() ||
+        "请作为A股产业研究员,分析这张图(可能是K线、研报截图或产业链图),给出关键信息、含义与需要注意的风险点。";
+      const analysis = await analyzeImagesWithVision(multimodalConfig(), images, question, VISION_SYSTEM_PROMPT);
+      await replyFeishuMessage({
+        appId,
+        appSecret,
+        messageId: message.messageId,
+        chatId,
+        text: analysis.trim() || "(视觉模型未返回内容)",
+        renderMode: "card",
+      });
+    } catch (error) {
+      await sendFeishuTextToChat(appId, appSecret, chatId, `图片分析失败:${redactForChat(error instanceof Error ? error.message : String(error))}`);
+    }
+  }
+
+  async function runFeishuDraw(message: FeishuMessageEvent): Promise<void> {
+    const chatId = message.chatId ?? message.sessionId;
+    const appId = config.feishuAppId;
+    const appSecret = config.feishuAppSecret;
+    if (!appId || !appSecret) return;
+    const prompt = message.text.trim().replace(/^\/\S+\s*/, "").trim();
+    if (!config.multimodalEnabled || !config.aicodewithApiKey) {
+      await sendFeishuTextToChat(appId, appSecret, chatId, "生图未启用:请在 .env 配置 AICODEWITH_API_KEY。");
+      return;
+    }
+    if (!prompt) {
+      await sendFeishuTextToChat(appId, appSecret, chatId, "用法:/draw <图片描述>。例如 /draw 半导体产业链结构图,扁平信息图风格,中文标注");
+      return;
+    }
+    try {
+      await sendFeishuTextToChat(appId, appSecret, chatId, `🎨 正在用 ${config.imageModel} 生成图片(约 30–60 秒)…`);
+      const cfg = multimodalConfig();
+      const { url } = await generateImage(cfg, prompt, { size: "1024x1024" });
+      const { bytes } = await downloadImageBytes(cfg, url);
+      const imageKey = await uploadFeishuImage(appId, appSecret, bytes);
+      await sendFeishuImageToChat(appId, appSecret, chatId, imageKey);
+    } catch (error) {
+      await sendFeishuTextToChat(appId, appSecret, chatId, `生图失败:${redactForChat(error instanceof Error ? error.message : String(error))}`);
+    }
+  }
+
+  async function handleFeishuMessage(message: FeishuMessageEvent): Promise<string | undefined> {
+    if (!shouldHandleFeishuMessage(message)) return undefined;
+    // 有图片就走视觉路(即便多模态未启用也走这里,由 runFeishuVision 回友好提示,
+    // 避免把无文字的图片消息当成空文本丢给 deepseek)。
+    // 复杂问题视觉分析可能 1–3 分钟;fire-and-forget,先回进度、结果自身发卡,
+    // 不占用 per-session 队列(否则会阻塞后续提问)。
+    if ((message.imageKeys?.length ?? 0) > 0) {
+      void runFeishuVision(message).catch((error) =>
+        console.error(`runFeishuVision failed: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      return undefined;
+    }
+    const command = message.text.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (DRAW_COMMANDS.has(command)) {
+      // 生图可达数分钟;fire-and-forget,结果自身经会话 API 回发,
+      // 不占用 per-session 队列(否则会阻塞该用户后续的文本问答)。
+      void runFeishuDraw(message).catch((error) =>
+        console.error(`runFeishuDraw failed: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      return undefined;
+    }
+    return runFeishuText(message.text, message.sessionId);
+  }
+
   const server = createFeishuServer({
     port: config.feishuPort,
     token: config.feishuVerificationToken,
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
-    onMessage: (message) => (shouldHandleFeishuMessage(message) ? runFeishuText(message.text, message.sessionId) : undefined),
+    dryRunReplies: config.feishuDryRunReplies,
+    replyRenderMode: normalizeFeishuReplyRenderMode(config.feishuReplyRenderMode),
+    onMessage: (message) => handleFeishuMessage(message),
     ffdReportRelay: config.ffdReportRelayToken
       ? {
           token: config.ffdReportRelayToken,
@@ -833,9 +971,13 @@ async function feishuServer() {
         }
       : undefined,
     commands: {
-      "/ask": (arg: string) => askAgent("legacy", arg),
-      "/chat": (arg: string) => askAgent("legacy", arg),
-      "/reset": () => resetAgent("legacy"),
+      "/ask": (arg: string) => tradingFeishuRouter.ask("legacy", arg),
+      "/chat": (arg: string) => tradingFeishuRouter.ask("legacy", arg),
+      "/trading": (arg: string) => tradingFeishuRouter.ask("legacy", arg),
+      "/hermes": (arg: string) => tradingFeishuRouter.ask("legacy", arg),
+      "/reset": () => tradingFeishuRouter.reset("legacy"),
+      "/hermes-metadata": () => tradingFeishuRouter.metadata("legacy"),
+      "/agent-metadata": () => tradingFeishuRouter.metadata("legacy"),
       "/screen": async () => {
         await screen();
         return "Screening completed. Check reports/ and runs/.";
@@ -880,6 +1022,8 @@ async function feishuServer() {
       },
       "/quant-adapt-history": (arg: string) => quantAdaptHistoryCommand(arg.trim() ? arg.trim().split(/\s+/) : []),
       "/quant-backtest": (arg: string) => quantBacktestCommand(arg.trim() || undefined),
+      "/board": (arg: string) => runFeishuWhiteboardCommand(arg, "legacy"),
+      "/whiteboard": (arg: string) => runFeishuWhiteboardCommand(arg, "legacy"),
       "/sources": async () => {
         const sources = await loadSourceRegistry();
         return sources.slice(0, 20).map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n");

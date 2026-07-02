@@ -515,7 +515,7 @@ export function createTradingAgent() {
       systemPrompt: TRADING_AGENT_SYSTEM_PROMPT,
       model,
       tools,
-      thinkingLevel: "medium",
+      thinkingLevel: config.thinkingLevel,
     },
   });
   return {

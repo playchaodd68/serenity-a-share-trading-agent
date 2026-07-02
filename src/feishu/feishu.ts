@@ -14,6 +14,7 @@ export interface FeishuMessageEvent {
   senderOpenId?: string;
   mentionedBot: boolean;
   text: string;
+  imageKeys?: string[];
 }
 
 export interface FeishuWebhookRelayOptions {
@@ -24,6 +25,13 @@ export interface FeishuWebhookRelayOptions {
 export interface FeishuServerLogger {
   info: (message: string) => void;
   error: (message: string) => void;
+}
+
+export type FeishuReplyRenderMode = "text" | "post" | "card";
+
+export interface FeishuOutboundMessagePayload {
+  msg_type: "text" | "post" | "interactive" | "image";
+  content: string;
 }
 
 interface FeishuTokenCache {
@@ -51,7 +59,17 @@ export async function sendFeishuMarkdown(webhookUrl: string, title: string, cont
 }
 
 const FEISHU_TEXT_LIMIT = 3500;
+// Interactive cards / rich posts render markdown natively and hold far more than a
+// plain text message, so split much less aggressively and without the [i/n] prefix.
+const FEISHU_CARD_TEXT_LIMIT = 6000;
 const FEISHU_CHUNK_PREFIX_RESERVE = 40;
+const FEISHU_MESSAGE_DEDUPE_TTL_MS = 10 * 60 * 1000;
+
+export function normalizeFeishuReplyRenderMode(raw: string | undefined): FeishuReplyRenderMode {
+  const value = (raw ?? "text").trim().toLowerCase();
+  if (value === "post" || value === "card") return value;
+  return "text";
+}
 
 export function splitFeishuText(text: string, limit = FEISHU_TEXT_LIMIT): string[] {
   if (!Number.isFinite(limit) || limit < 1) throw new Error("Feishu text chunk limit must be positive.");
@@ -90,10 +108,89 @@ export function formatFeishuTextChunks(text: string, limit = FEISHU_TEXT_LIMIT):
   return chunks.map((chunk, index) => `[${index + 1}/${chunks.length}]\n${chunk}`);
 }
 
+function flattenFeishuRichText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(flattenFeishuRichText).filter(Boolean).join("");
+  if (!value || typeof value !== "object") return "";
+  const data = value as Record<string, unknown>;
+  return [
+    typeof data.text === "string" ? data.text : "",
+    typeof data.href === "string" ? data.href : "",
+    typeof data.user_name === "string" ? data.user_name : "",
+    flattenFeishuRichText(data.content),
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function extractFeishuContentText(rawContent: unknown): string {
+  if (rawContent == null) return "";
+  if (typeof rawContent === "string") {
+    const trimmed = rawContent.trim();
+    if (!trimmed) return "";
+    try {
+      return extractFeishuContentText(JSON.parse(trimmed));
+    } catch {
+      return trimmed;
+    }
+  }
+
+  if (!rawContent || typeof rawContent !== "object") return String(rawContent).trim();
+  const content = rawContent as Record<string, unknown>;
+  if (typeof content.text === "string") return content.text.trim();
+  if (content.content != null) return flattenFeishuRichText(content.content).trim();
+  if (content.post && typeof content.post === "object") return flattenFeishuRichText(content.post).trim();
+  return "";
+}
+
 type FeishuProactiveReceiveIdType = "chat_id" | "open_id" | "union_id" | "user_id" | "email";
 
-async function postFeishuText(token: string, receiveIdType: FeishuProactiveReceiveIdType, receiveId: string, text: string): Promise<void> {
+function buildFeishuPostContent(text: string, title = "Trading Agent"): string {
+  return JSON.stringify({
+    zh_cn: {
+      title,
+      content: [[{ tag: "md", text }]],
+    },
+  });
+}
+
+function buildFeishuCardContent(text: string, title = "📊 Serenity 交易研究"): string {
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: {
+      template: "indigo",
+      title: { tag: "plain_text", content: title },
+    },
+    elements: [{ tag: "markdown", content: text }],
+  });
+}
+
+export function buildFeishuReplyPayload(text: string, renderMode: FeishuReplyRenderMode = "text", title = "📊 Serenity 交易研究"): FeishuOutboundMessagePayload {
   const normalizedText = toSimplifiedChinese(text);
+  if (renderMode === "post") {
+    return {
+      msg_type: "post",
+      content: buildFeishuPostContent(normalizedText, toSimplifiedChinese(title)),
+    };
+  }
+  if (renderMode === "card") {
+    return {
+      msg_type: "interactive",
+      content: buildFeishuCardContent(normalizedText, toSimplifiedChinese(title)),
+    };
+  }
+  return {
+    msg_type: "text",
+    content: JSON.stringify({ text: normalizedText }),
+  };
+}
+
+async function postFeishuMessage(
+  token: string,
+  receiveIdType: FeishuProactiveReceiveIdType,
+  receiveId: string,
+  payload: FeishuOutboundMessagePayload,
+): Promise<void> {
   const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
     method: "POST",
     headers: {
@@ -102,8 +199,8 @@ async function postFeishuText(token: string, receiveIdType: FeishuProactiveRecei
     },
     body: JSON.stringify({
       receive_id: receiveId,
-      msg_type: "text",
-      content: JSON.stringify({ text: normalizedText }),
+      msg_type: payload.msg_type,
+      content: payload.content,
     }),
   });
   if (!response.ok) throw new Error(`Feishu send failed: ${response.status} ${await response.text()}`);
@@ -111,8 +208,16 @@ async function postFeishuText(token: string, receiveIdType: FeishuProactiveRecei
   if (body.code !== 0) throw new Error(`Feishu send error: ${body.code} ${body.msg ?? ""}`.trim());
 }
 
+async function postFeishuText(token: string, receiveIdType: FeishuProactiveReceiveIdType, receiveId: string, text: string): Promise<void> {
+  await postFeishuMessage(token, receiveIdType, receiveId, buildFeishuReplyPayload(text, "text"));
+}
+
 async function postFeishuChatText(token: string, chatId: string, text: string): Promise<void> {
   await postFeishuText(token, "chat_id", chatId, text);
+}
+
+export async function postFeishuChatMessage(token: string, chatId: string, payload: FeishuOutboundMessagePayload): Promise<void> {
+  await postFeishuMessage(token, "chat_id", chatId, payload);
 }
 
 export async function sendFeishuChatText(options: { appId: string; appSecret: string; chatId: string; text: string }): Promise<void> {
@@ -143,7 +248,28 @@ export async function sendFeishuTextByReceiveId(options: {
 }
 
 export function extractFeishuText(payload: any): string {
-  return String(payload?.event?.message?.content ? JSON.parse(payload.event.message.content).text ?? "" : payload?.text ?? "").trim();
+  return extractFeishuContentText(payload?.event?.message?.content ?? payload?.text);
+}
+
+function extractFeishuImageKeys(content: unknown): string[] {
+  const keys: string[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.image_key === "string" && obj.image_key) keys.push(obj.image_key);
+    if (Array.isArray(obj.image_keys)) {
+      for (const k of obj.image_keys) if (typeof k === "string" && k) keys.push(k);
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(content);
+  return [...new Set(keys)];
 }
 
 export function extractFeishuMessageEvent(payload: any): FeishuMessageEvent | undefined {
@@ -157,16 +283,33 @@ export function extractFeishuMessageEvent(payload: any): FeishuMessageEvent | un
 
   let text = "";
   let mentionedBot = false;
+  let imageKeys: string[] = [];
   try {
     const content = JSON.parse(message?.content ?? "{}");
-    text = String(content?.text ?? "");
+    text = extractFeishuContentText(content);
+    imageKeys = extractFeishuImageKeys(content);
     mentionedBot = /<at\b[^>]*>.*?<\/at>/i.test(text);
   } catch {
-    text = "";
+    text = extractFeishuContentText(message?.content);
   }
   text = text.replace(/<at[^>]*>.*?<\/at>/g, "").replace(/^@\S+\s+/, "").trim();
-  if (!text) return undefined;
-  return { messageId, sessionId, chatId, chatType: message?.chat_type, senderOpenId, mentionedBot, text };
+  // 兼容把图片渲染成 "[Image: <key>]" 文本的来源(如 lark-cli 轮询):抽出 key 并剥离 token
+  const bracketKeys = [...text.matchAll(/\[Image:\s*([^\]]+?)\s*\]/g)].map((m) => m[1].trim());
+  if (bracketKeys.length > 0) {
+    imageKeys = [...new Set([...imageKeys, ...bracketKeys])];
+    text = text.replace(/\[Image:\s*[^\]]+\]/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+  if (!text && imageKeys.length === 0) return undefined;
+  return {
+    messageId,
+    sessionId,
+    chatId,
+    chatType: message?.chat_type,
+    senderOpenId,
+    mentionedBot,
+    text,
+    ...(imageKeys.length > 0 ? { imageKeys } : {}),
+  };
 }
 
 function payloadToken(payload: any): string | undefined {
@@ -195,7 +338,7 @@ export async function handleFeishuCallback(
     return {
       status: 200,
       body: {
-        text: "Supported commands: /ask <question>, /reset, /screen, /research-refresh, /ffd-health, /ffd <query>, /ffd-industry <query>, /ffd-research <keyword>, /ffd-news <keyword>, /ffd-smoke, /ffd-signal <mode> <query>, /ffd-auto-rules, /reports-convert, /reports-review, /reports-accept <id>, /reports-accept --force <id>, /reports-accept-quality, /reports-reject <id>, /archive-obsidian, /watchlist, /calibration, /evals, /latest, /why <code>, /sources, /methodology, /doctor, /harness",
+        text: "Supported commands: /ask <question>, /reset, /screen, /research-refresh, /ffd-health, /ffd <query>, /ffd-industry <query>, /ffd-research <keyword>, /ffd-news <keyword>, /ffd-smoke, /ffd-signal <mode> <query>, /ffd-auto-rules, /reports-convert, /reports-review, /reports-accept <id>, /reports-accept --force <id>, /reports-accept-quality, /reports-reject <id>, /archive-obsidian, /watchlist, /calibration, /evals, /board <topic-or-mermaid>, /latest, /why <code>, /sources, /methodology, /doctor, /harness",
       },
     };
   }
@@ -203,7 +346,7 @@ export async function handleFeishuCallback(
   return { status: 200, body: { text: toSimplifiedChinese(result) } };
 }
 
-async function getTenantAccessToken(appId: string, appSecret: string): Promise<string> {
+export async function getTenantAccessToken(appId: string, appSecret: string): Promise<string> {
   const now = Date.now();
   const cached = tenantTokenCacheByAppId.get(appId);
   if (cached && cached.expiresAt > now + 60_000) return cached.token;
@@ -223,22 +366,22 @@ async function getTenantAccessToken(appId: string, appSecret: string): Promise<s
   return cache.token;
 }
 
-async function postFeishuReplyText(token: string, messageId: string, text: string): Promise<void> {
-  const normalizedText = toSimplifiedChinese(text);
+async function postFeishuReplyMessage(token: string, messageId: string, payload: FeishuOutboundMessagePayload): Promise<void> {
   const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,
       "content-type": "application/json; charset=utf-8",
     },
-    body: JSON.stringify({
-      msg_type: "text",
-      content: JSON.stringify({ text: normalizedText }),
-    }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) throw new Error(`Feishu reply failed: ${response.status} ${await response.text()}`);
   const body = (await response.json()) as { code?: number; msg?: string };
   if (body.code !== 0) throw new Error(`Feishu reply error: ${body.code} ${body.msg ?? ""}`.trim());
+}
+
+async function postFeishuReplyText(token: string, messageId: string, text: string): Promise<void> {
+  await postFeishuReplyMessage(token, messageId, buildFeishuReplyPayload(text, "text"));
 }
 
 export async function replyFeishuText(options: {
@@ -248,16 +391,35 @@ export async function replyFeishuText(options: {
   chatId?: string;
   text: string;
 }): Promise<void> {
+  await replyFeishuMessage({ ...options, renderMode: "text" });
+}
+
+export async function replyFeishuMessage(options: {
+  appId?: string;
+  appSecret?: string;
+  messageId: string;
+  chatId?: string;
+  text: string;
+  renderMode?: FeishuReplyRenderMode;
+}): Promise<void> {
   if (!options.appId || !options.appSecret) {
     throw new Error("FEISHU_APP_ID and FEISHU_APP_SECRET are required to reply to Feishu messages.");
   }
   const token = await getTenantAccessToken(options.appId, options.appSecret);
-  const chunks = formatFeishuTextChunks(toSimplifiedChinese(options.text));
+  const renderMode = options.renderMode ?? "text";
+  const normalizedText = toSimplifiedChinese(options.text);
+  // Plain text needs the [i/n] prefix so split replies stay ordered; cards and posts
+  // render as standalone rich blocks, so split larger and without the noisy prefix.
+  const chunks =
+    renderMode === "text"
+      ? formatFeishuTextChunks(normalizedText)
+      : splitFeishuText(normalizedText, FEISHU_CARD_TEXT_LIMIT);
   for (const [index, chunk] of chunks.entries()) {
+    const payload = buildFeishuReplyPayload(chunk, renderMode);
     if (index === 0 || !options.chatId) {
-      await postFeishuReplyText(token, options.messageId, chunk);
+      await postFeishuReplyMessage(token, options.messageId, payload);
     } else {
-      await postFeishuChatText(token, options.chatId, chunk);
+      await postFeishuChatMessage(token, options.chatId, payload);
     }
   }
 }
@@ -270,10 +432,23 @@ export function createFeishuServer(options: {
   commands: Record<string, (arg: string) => Promise<string> | string>;
   onMessage?: (message: FeishuMessageEvent) => Promise<string | undefined> | string | undefined;
   ffdReportRelay?: FeishuWebhookRelayOptions;
+  dryRunReplies?: boolean;
+  replyRenderMode?: FeishuReplyRenderMode;
   logger?: FeishuServerLogger;
 }): http.Server {
   const logger = options.logger ?? console;
   const messageQueues = new Map<string, Promise<void>>();
+  const recentMessageIds = new Map<string, number>();
+
+  function shouldAcceptMessage(messageId: string): boolean {
+    const now = Date.now();
+    for (const [id, seenAt] of recentMessageIds) {
+      if (now - seenAt > FEISHU_MESSAGE_DEDUPE_TTL_MS) recentMessageIds.delete(id);
+    }
+    if (recentMessageIds.has(messageId)) return false;
+    recentMessageIds.set(messageId, now);
+    return true;
+  }
 
   function enqueueMessage(message: FeishuMessageEvent): void {
     const previous = messageQueues.get(message.sessionId) ?? Promise.resolve();
@@ -285,13 +460,18 @@ export function createFeishuServer(options: {
           logger.info(`Feishu message ignored by handler: messageId=${message.messageId}`);
           return;
         }
+        if (options.dryRunReplies) {
+          logger.info(`Feishu dry-run reply: messageId=${message.messageId} length=${text.length} text="${redactLogText(text).slice(0, 240)}"`);
+          return;
+        }
         logger.info(`Feishu reply started: messageId=${message.messageId} length=${text.length}`);
-        await replyFeishuText({
+        await replyFeishuMessage({
           appId: options.appId,
           appSecret: options.appSecret,
           messageId: message.messageId,
           chatId: message.chatId,
           text,
+          renderMode: options.replyRenderMode ?? "text",
         });
         logger.info(`Feishu reply sent: messageId=${message.messageId}`);
       })
@@ -341,6 +521,12 @@ export function createFeishuServer(options: {
       }
       const message = extractFeishuMessageEvent(payload);
       if (message && options.onMessage) {
+        if (!shouldAcceptMessage(message.messageId)) {
+          logger.info(`Feishu duplicate message ignored: messageId=${message.messageId}`);
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ ok: true, duplicate: true }));
+          return;
+        }
         logger.info(
           `Feishu message received: messageId=${message.messageId} sessionId=${message.sessionId} chatType=${message.chatType ?? "unknown"} mentionedBot=${message.mentionedBot} text="${redactLogText(message.text).slice(0, 120)}"`,
         );

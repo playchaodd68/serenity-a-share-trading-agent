@@ -12,6 +12,8 @@ import importlib.util
 import json
 import os
 import re
+import argparse
+import time
 from datetime import date
 from pathlib import Path
 from typing import Dict, Iterable
@@ -347,5 +349,90 @@ base.FFDClient.download_file = download_file_with_sidecar
 base.safe_filename = safe_download_filename
 
 
+def run_sync_once_with_status(client, save_root: Path, state: set[int]) -> bool:
+    try:
+        poll_result = client.poll_sync_pending()
+    except Exception as exc:
+        base.log.error(f"轮询失败: {exc}")
+        return False
+
+    try:
+        result = base.do_sync(client, save_root, state, poll_result)
+        client.report_sync(**result)
+        return True
+    except Exception as exc:
+        base.log.error(f"同步异常: {exc}")
+        try:
+            client.report_sync(sync_count=0, message=f"客户端异常: {exc}")
+        except Exception:
+            pass
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="FFD 自动下载客户端，支持规则组与定时全量重试")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--sync-now", action="store_true", help="立即同步一次后退出")
+    parser.add_argument("--bind-code", help="用网页绑定码绑定本机并写入配置")
+    parser.add_argument("--server-url", default="https://ffd.findesk.cn", help="FFD 服务地址")
+    args = parser.parse_args()
+
+    if args.bind_code:
+        base.bind_with_code(args.server_url, args.bind_code)
+        return
+
+    base.setup_logging(args.verbose)
+    cfg = base.load_config()
+    state = base.load_state()
+    save_root = Path(cfg["save_dir"]).expanduser()
+    save_root.mkdir(parents=True, exist_ok=True)
+
+    base.log.info("=" * 60)
+    base.log.info("FFD Downloader 启动")
+    base.log.info(f"  保存目录: {save_root}")
+    base.log.info(f"  服务器: {cfg['server_url']}")
+    base.log.info(f"  已下载记录: {len(state)} 个文件")
+    base.log.info("=" * 60)
+
+    client = base.FFDClient(cfg)
+    poll_interval = cfg.get("poll_interval_seconds", 60)
+    full_sync_interval = int(cfg.get("full_sync_interval_seconds") or 6 * 60 * 60)
+
+    try:
+        base.log.info("启动时同步...")
+        startup_ok = run_sync_once_with_status(client, save_root, state)
+
+        if args.sync_now:
+            base.log.info("--sync-now 完成, 退出")
+            return
+
+        retry_delay = min(300, full_sync_interval)
+        next_full_sync = time.monotonic() + (full_sync_interval if startup_ok else retry_delay)
+        base.log.info(f"进入轮询模式, 每 {poll_interval}s 检查 sync_pending; 每 {full_sync_interval}s 定时全量同步")
+        while True:
+            try:
+                time.sleep(poll_interval)
+                poll_result = client.poll_sync_pending()
+                now = time.monotonic()
+                should_periodic_sync = now >= next_full_sync
+                if poll_result.get("pending") or should_periodic_sync:
+                    if poll_result.get("pending"):
+                        base.log.info("收到 [立即同步] 触发!")
+                    else:
+                        base.log.info("定时全量同步触发")
+                    result = base.do_sync(client, save_root, state, poll_result)
+                    client.report_sync(**result)
+                    next_full_sync = time.monotonic() + full_sync_interval
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                base.log.warning(f"轮询出错(继续): {exc}")
+    except KeyboardInterrupt:
+        base.log.info("收到 Ctrl-C, 退出")
+    finally:
+        client.close()
+        base.log.info("FFD Downloader 已退出")
+
+
 if __name__ == "__main__":
-    base.main()
+    main()

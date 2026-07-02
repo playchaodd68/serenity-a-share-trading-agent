@@ -35,6 +35,9 @@
     "feishu:event-relay": "node scripts/feishu-event-relay.mjs",
     "feishu:poller": "node scripts/feishu-message-poller.mjs",
     "agent": "tsx src/cli.ts agent",
+    "hermes:subagent": "tsx src/hermes/cli.ts",
+    "hermes:metadata": "tsx src/hermes/cli.ts --metadata",
+    "hermes:chat": "tsx src/cli.ts chat",
     "chat": "tsx src/cli.ts chat",
     "chat:server": "tsx src/cli.ts chat-server"
   },
