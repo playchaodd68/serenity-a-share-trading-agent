@@ -40,3 +40,4 @@ data/decision-log.json
 data/graveyard.json
 data/bear-cases.json
 .playwright-mcp/
+data/quant/
