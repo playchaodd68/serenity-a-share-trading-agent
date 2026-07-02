@@ -32,6 +32,7 @@ import { renderVerdict, synthesizeVerdict } from "./research/debate/verdict.js";
 import { createDeepSeekClient } from "./research/debate/llm-client.js";
 import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
 import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
+import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
 import { renderAnswerSafetyEvals, renderSycophancyEvals, runAnswerSafetyEvals, runSycophancyPromptEvals } from "./research/evals.js";
 import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
 import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
@@ -643,10 +644,21 @@ async function showWatchlist() {
   console.log(renderWatchlistSummary(await loadWatchlist()));
 }
 
+async function sycophancySliceReport(): Promise<string | null> {
+  const { portfolio } = await loadPortfolio();
+  if (!portfolio || portfolio.positions.length === 0) return null;
+  const resolutions = await loadResolutions();
+  const report = computeSycophancySlices(resolutions, new Set(portfolio.positions.map((position) => position.code)));
+  await writeJsonFile("runs/sycophancy-slice-latest.json", report);
+  return renderSycophancySlices(report);
+}
+
 async function calibration() {
   const snapshot = await buildCalibrationSnapshot();
   await writeCalibrationSnapshot(snapshot);
   console.log(renderCalibrationSnapshot(snapshot));
+  const slice = await sycophancySliceReport();
+  if (slice) console.log(`\n${slice}`);
 }
 
 async function evals() {
@@ -913,7 +925,8 @@ async function feishuServer() {
       case "/calibration": {
         const snapshot = await buildCalibrationSnapshot();
         await writeCalibrationSnapshot(snapshot);
-        return renderCalibrationSnapshot(snapshot);
+        const slice = await sycophancySliceReport();
+        return slice ? [renderCalibrationSnapshot(snapshot), "", slice].join("\n") : renderCalibrationSnapshot(snapshot);
       }
       case "/evals": {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
