@@ -35,3 +35,7 @@ data/graphs/
 _real.mts
 skills-lock.json
 runs/
+data/portfolio.json
+data/decision-log.json
+data/graveyard.json
+data/bear-cases.json
