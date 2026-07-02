@@ -1,4 +1,5 @@
 import type { QuantCandidateBucket, QuantEvidenceGate } from "../types.js";
+import { hasCompleteOhlc, isOnePriceBar, isSuspendedBar, type ExecutionBar } from "./execution-constraints.js";
 import { assessBacktestOverfitting, type OverfittingGuard } from "./overfitting.js";
 
 export const SERENITY_QUANT_BACKTEST = "Serenity Mainline Quant Backtest" as const;
@@ -19,6 +20,8 @@ export interface QuantBacktestCandidate {
   suspended?: boolean;
   limitUp?: boolean;
   limitDown?: boolean;
+  // 调仓日原始 OHLCV，用于区分一字板与触板开板、由零成交量平价推断停牌。缺失时按保守口径处理。
+  bar?: ExecutionBar;
 }
 
 export interface QuantBacktestSnapshot {
@@ -69,6 +72,18 @@ export interface QuantBacktestSelectedPosition {
   weight: number;
   forwardReturn: number;
   frozen: boolean;
+  // 冻结持仓的累计卖出受阻天数（pending exit 顺延中），非冻结持仓无此字段。
+  blockedExitDays?: number;
+}
+
+export interface QuantBacktestExecutionStats {
+  buyBlockedOnePriceLimitUp: number;
+  sellBlockedOnePriceLimitDown: number;
+  sellBlockedSuspended: number;
+  // 卖出受阻挂起的独立事件数（同一持仓连续多期受阻只计一次）。
+  pendingExits: number;
+  // 卖出受阻的累计期数。
+  blockedExitDays: number;
 }
 
 export interface QuantBacktestPeriodResult {
@@ -136,14 +151,18 @@ export interface QuantBacktestResult {
   ic: QuantBacktestIc[];
   groupReturns: QuantBacktestGroupReturn[];
   bucketStats: QuantBacktestBucketStat[];
+  executionStats: QuantBacktestExecutionStats;
   overfitting?: OverfittingGuard;
   notes: string[];
 }
+
+type FrozenCause = "limitDown" | "suspended";
 
 interface FrozenPosition {
   candidate: QuantBacktestCandidate;
   previousWeight: number;
   reason: string;
+  cause: FrozenCause;
 }
 
 function effectiveOptions(options: QuantBacktestOptions = {}): EffectiveQuantBacktestOptions {
@@ -218,9 +237,29 @@ function candidateByCode(snapshot: QuantBacktestSnapshot): Map<string, QuantBack
   return new Map(snapshot.candidates.map((candidate) => [candidate.code, candidate]));
 }
 
+// 一字板区分：涨跌停触板但盘中开板（非一字）是可以成交的；缺少完整 OHLC 时按保守口径视同一字。
+function isOnePriceOrUnknown(candidate: QuantBacktestCandidate): boolean {
+  if (candidate.bar && hasCompleteOhlc(candidate.bar)) return isOnePriceBar(candidate.bar);
+  return true;
+}
+
+function buyBlockedByLimitUp(candidate: QuantBacktestCandidate): boolean {
+  return candidate.limitUp === true && isOnePriceOrUnknown(candidate);
+}
+
+function sellBlockedByLimitDown(candidate: QuantBacktestCandidate): boolean {
+  return candidate.limitDown === true && isOnePriceOrUnknown(candidate);
+}
+
+// 停牌口径：显式标志优先；否则由 K 线推断（无有效价格，或零成交量且价格无波动）。
+function candidateSuspended(candidate: QuantBacktestCandidate): boolean {
+  if (candidate.suspended != null) return candidate.suspended;
+  return candidate.bar != null && isSuspendedBar(candidate.bar);
+}
+
 function canEnter(candidate: QuantBacktestCandidate, previousWeights: Map<string, number>, options: EffectiveQuantBacktestOptions): boolean {
-  if (candidate.tradable === false || candidate.suspended) return false;
-  if (!options.allowLimitUpBuys && candidate.limitUp && !previousWeights.has(candidate.code)) return false;
+  if (candidate.tradable === false || candidateSuspended(candidate)) return false;
+  if (!options.allowLimitUpBuys && buyBlockedByLimitUp(candidate) && !previousWeights.has(candidate.code)) return false;
   if (candidate.score < options.minScore) return false;
   if (candidate.bucket && !options.includeBuckets.includes(candidate.bucket)) return false;
   if (candidate.evidenceGate && !options.includeEvidenceGates.includes(candidate.evidenceGate)) return false;
@@ -234,10 +273,10 @@ function frozenPositions(snapshot: QuantBacktestSnapshot, previousWeights: Map<s
     if (previousWeight <= 0) continue;
     const candidate = byCode.get(code);
     if (!candidate) continue;
-    if (!options.allowLimitDownSells && candidate.limitDown) {
-      frozen.push({ candidate, previousWeight, reason: `${code} 跌停，无法按计划卖出` });
-    } else if (candidate.tradable === false || candidate.suspended) {
-      frozen.push({ candidate, previousWeight, reason: `${code} 停牌或不可交易，沿用上一期权重` });
+    if (!options.allowLimitDownSells && sellBlockedByLimitDown(candidate)) {
+      frozen.push({ candidate, previousWeight, reason: `${code} 跌停（一字板），卖出挂起顺延`, cause: "limitDown" });
+    } else if (candidate.tradable === false || candidateSuspended(candidate)) {
+      frozen.push({ candidate, previousWeight, reason: `${code} 停牌或不可交易，沿用上一期权重`, cause: "suspended" });
     }
   }
   return frozen;
@@ -256,7 +295,14 @@ function sortCandidates(candidates: QuantBacktestCandidate[]): QuantBacktestCand
   });
 }
 
-function selectedPortfolio(snapshot: QuantBacktestSnapshot, previousWeights: Map<string, number>, options: EffectiveQuantBacktestOptions): { selected: QuantBacktestSelectedPosition[]; blockedBuys: string[]; blockedSells: string[] } {
+interface SelectedPortfolio {
+  selected: QuantBacktestSelectedPosition[];
+  blockedBuys: string[];
+  blockedSells: string[];
+  frozenCauses: { code: string; cause: FrozenCause }[];
+}
+
+function selectedPortfolio(snapshot: QuantBacktestSnapshot, previousWeights: Map<string, number>, options: EffectiveQuantBacktestOptions): SelectedPortfolio {
   const frozen = frozenPositions(snapshot, previousWeights, options);
   const frozenCodes = new Set(frozen.map((item) => item.candidate.code));
   const industryCounts = new Map<string, number>();
@@ -272,10 +318,12 @@ function selectedPortfolio(snapshot: QuantBacktestSnapshot, previousWeights: Map
   const blockedBuys: string[] = [];
 
   for (const candidate of sortCandidates(snapshot.candidates)) {
+    // 冻结持仓占用槽位：卖不掉的持仓会阻止替补买入（不能先买后卖腾挪权重）。
+    if (desired.length >= desiredSlots) break;
     if (frozenCodes.has(candidate.code)) continue;
     const wasHeld = previousWeights.has(candidate.code);
-    if (!options.allowLimitUpBuys && candidate.limitUp && !wasHeld) {
-      blockedBuys.push(`${candidate.code} 涨停，跳过新买入`);
+    if (!options.allowLimitUpBuys && buyBlockedByLimitUp(candidate) && !wasHeld) {
+      blockedBuys.push(`${candidate.code} 涨停（一字板或缺K线），跳过新买入`);
       continue;
     }
     if (!canEnter(candidate, previousWeights, options)) continue;
@@ -320,6 +368,7 @@ function selectedPortfolio(snapshot: QuantBacktestSnapshot, previousWeights: Map
     selected,
     blockedBuys,
     blockedSells: frozen.map((item) => item.reason),
+    frozenCauses: frozen.map((item) => ({ code: item.candidate.code, cause: item.cause })),
   };
 }
 
@@ -496,6 +545,28 @@ function metricsFor(periods: QuantBacktestPeriodResult[], options: EffectiveQuan
   };
 }
 
+// pending exit 顺延统计：卖出受阻的持仓挂起到次一可成交日，按事件与累计天数计数（参考 blocked_exit_days 口径）。
+function trackPendingExits(
+  portfolio: SelectedPortfolio,
+  previousWeights: Map<string, number>,
+  blockedDaysByCode: Map<string, number>,
+  stats: QuantBacktestExecutionStats,
+): QuantBacktestSelectedPosition[] {
+  const frozenNow = new Map(portfolio.frozenCauses.map((item) => [item.code, item.cause]));
+  for (const code of previousWeights.keys()) {
+    if (!frozenNow.has(code)) blockedDaysByCode.delete(code);
+  }
+  for (const [code, cause] of frozenNow.entries()) {
+    const days = (blockedDaysByCode.get(code) ?? 0) + 1;
+    if (days === 1) stats.pendingExits += 1;
+    blockedDaysByCode.set(code, days);
+    stats.blockedExitDays += 1;
+    if (cause === "limitDown") stats.sellBlockedOnePriceLimitDown += 1;
+    else stats.sellBlockedSuspended += 1;
+  }
+  return portfolio.selected.map((position) => (position.frozen ? { ...position, blockedExitDays: blockedDaysByCode.get(position.code) ?? 0 } : position));
+}
+
 export function runQuantBacktest(inputSnapshots: QuantBacktestSnapshot[], rawOptions: QuantBacktestOptions = {}): QuantBacktestResult {
   const options = effectiveOptions(rawOptions);
   const snapshots = normalizeSnapshots(inputSnapshots);
@@ -505,9 +576,22 @@ export function runQuantBacktest(inputSnapshots: QuantBacktestSnapshot[], rawOpt
   let benchmarkEquity = 1;
   let peakEquity = equity;
   const costRate = (options.transactionCostBps + options.slippageBps) / 10_000;
+  const blockedDaysByCode = new Map<string, number>();
+  const executionStats: QuantBacktestExecutionStats = {
+    buyBlockedOnePriceLimitUp: 0,
+    sellBlockedOnePriceLimitDown: 0,
+    sellBlockedSuspended: 0,
+    pendingExits: 0,
+    blockedExitDays: 0,
+  };
 
   for (const snapshot of snapshots) {
-    const portfolio = selectedPortfolio(snapshot, previousWeights, options);
+    const rawPortfolio = selectedPortfolio(snapshot, previousWeights, options);
+    executionStats.buyBlockedOnePriceLimitUp += rawPortfolio.blockedBuys.length;
+    const portfolio = {
+      ...rawPortfolio,
+      selected: trackPendingExits(rawPortfolio, previousWeights, blockedDaysByCode, executionStats),
+    };
     const nextWeights = weightsFromSelected(portfolio.selected);
     const { turnover, tradedWeight } = turnoverStats(previousWeights, nextWeights);
     const grossReturn = sum(portfolio.selected.map((position) => position.weight * position.forwardReturn));
@@ -555,11 +639,12 @@ export function runQuantBacktest(inputSnapshots: QuantBacktestSnapshot[], rawOpt
     ic: snapshots.map(rankIcFor),
     groupReturns: groupReturnsFor(snapshots),
     bucketStats: bucketStatsFor(snapshots, periods),
+    executionStats,
     overfitting,
     notes: [
       "输入契约：每个 snapshot 表示调仓日截面，candidate.forwardReturn 为调仓后下一持有期收益率，小数格式如 0.05。",
       "组合构建：默认等权持有 core/watchlist，行业权重用持仓数量近似约束；技术面只确认趋势和交易可执行性。",
-      "交易约束：默认不能涨停新买入、不能跌停卖出，停牌/不可交易持仓沿用上一期权重。",
+      "交易约束：一字涨停禁新买入（触板开板可成交），一字跌停/停牌卖出挂起顺延至次一可成交日并沿用上一期权重；缺完整 OHLC 时按保守口径视同一字，停牌可由零成交量平价 K 线推断。",
       ...(overfitting
         ? [
             `过拟合护栏：trials=${overfitting.numTrials}，Deflated Sharpe=${overfitting.deflatedSharpe.dsr.toFixed(3)}（阈值 ${overfitting.threshold}）→ ${overfitting.passes ? "通过多重检验校正" : "未通过，疑似样本内过拟合"}。传入 options.trials 以启用。`,
@@ -599,6 +684,7 @@ export function renderQuantBacktestReport(result: QuantBacktestResult): string {
     `- Calmar: ${formatNumber(result.metrics.calmar, 2)}`,
     `- Hit rate: ${formatPct(result.metrics.hitRate)}; avg turnover: ${formatPct(result.metrics.avgTurnover)}; avg traded weight: ${formatPct(result.metrics.avgTradedWeight)}`,
     `- Average rank IC: ${formatNumber(averageRankIc, 3)}`,
+    `- Execution: blocked buys (one-price limit up) ${result.executionStats.buyBlockedOnePriceLimitUp}, blocked sells (one-price limit down) ${result.executionStats.sellBlockedOnePriceLimitDown}, blocked sells (suspended) ${result.executionStats.sellBlockedSuspended}, pending exits ${result.executionStats.pendingExits}, blocked exit days ${result.executionStats.blockedExitDays}`,
     result.overfitting
       ? `- Overfitting guard: trials=${result.overfitting.numTrials}, PSR>0=${formatNumber(result.overfitting.psrPositive, 3)}, Deflated Sharpe=${formatNumber(result.overfitting.deflatedSharpe.dsr, 3)} (threshold ${result.overfitting.threshold}) => ${result.overfitting.passes ? "PASS" : "FAIL (likely overfit)"}`
       : "- Overfitting guard: not run (pass options.trials>=2 to enable Deflated Sharpe correction)",

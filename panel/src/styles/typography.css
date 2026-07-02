@@ -1,0 +1,100 @@
+/* 报告"纸面"阅读样式（蓝图 §1.1 决策）：
+ * 暗色为全局默认，但长中文报告正文使用独立的亮底阅读 surface —
+ * --color-paper 底 + --text-read 字号 + 65ch 行宽，serif 可选。
+ * 供报告库详情页 ReadingPane（S3）与任何 markdown 长文渲染复用。 */
+
+.reading-pane {
+  background: var(--color-paper);
+  color: var(--color-paper-ink);
+  border-radius: var(--radius-card);
+  padding: var(--space-6);
+  font-size: var(--text-read);
+  line-height: 1.75;
+}
+
+.reading-pane > * {
+  max-width: 65ch;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.reading-pane.reading-serif {
+  font-family: var(--font-reading);
+}
+
+.reading-pane h1,
+.reading-pane h2,
+.reading-pane h3,
+.reading-pane h4 {
+  font-weight: 600;
+  line-height: 1.35;
+  margin-top: var(--space-6);
+  margin-bottom: var(--space-3);
+}
+
+.reading-pane h1 { font-size: var(--text-xl); }
+.reading-pane h2 { font-size: var(--text-lg); }
+.reading-pane h3 { font-size: var(--text-read); }
+
+.reading-pane p,
+.reading-pane ul,
+.reading-pane ol {
+  margin-bottom: var(--space-4);
+}
+
+.reading-pane ul { list-style: disc; padding-left: 1.5em; }
+.reading-pane ol { list-style: decimal; padding-left: 1.5em; }
+
+.reading-pane a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.reading-pane code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: oklch(0 0 0 / 0.06);
+  border-radius: var(--radius-input);
+  padding: 0.1em 0.35em;
+}
+
+.reading-pane pre {
+  background: oklch(0 0 0 / 0.06);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  overflow-x: auto;
+  margin-bottom: var(--space-4);
+}
+
+.reading-pane pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.reading-pane blockquote {
+  border-left: 3px solid var(--color-line-strong);
+  padding-left: var(--space-4);
+  color: var(--color-ink-3);
+  margin-bottom: var(--space-4);
+}
+
+.reading-pane table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-4);
+}
+
+.reading-pane th,
+.reading-pane td {
+  border: 1px solid oklch(0 0 0 / 0.14);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+}
+
+.reading-pane hr {
+  border: 0;
+  border-top: 1px solid oklch(0 0 0 / 0.14);
+  margin: var(--space-6) 0;
+}

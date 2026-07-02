@@ -81,6 +81,17 @@ describe("quant history adapter", () => {
     expect(bars[1]).toMatchObject({ code: "300001", date: "2026-01-02", close: 20, pctChange: 0.05, limitUp: false });
   });
 
+  it("解析最高价、最低价与成交量表头", () => {
+    const bars = parseHistoricalPriceCsv(
+      [
+        "证券代码,交易日期,开盘价,最高价,最低价,收盘价,成交量",
+        "600100,20260102,10,10.5,9.8,10.2,120000",
+      ].join("\n"),
+    );
+
+    expect(bars[0]).toMatchObject({ code: "600100", high: 10.5, low: 9.8, volume: 120_000 });
+  });
+
   it("adapts historical screen runs into backtest snapshots without crowding fields", () => {
     const oldRun = screenRun("2026-01-02T15:01:00.000Z", [candidate({ code: "688001", name: "旧信号", industry: "AI算力", score: 60 })]);
     const latestRun = screenRun("2026-01-02T15:30:00.000Z", [
@@ -119,5 +130,42 @@ describe("quant history adapter", () => {
     const inputFile = buildQuantBacktestInputFile(result);
     expect(inputFile.options.periodsPerYear).toBe(126);
     expect(renderQuantHistoryAdapterReport(result)).toContain("Two-sided crowding policy");
+  });
+
+  it("涨停标志用整数分涨停价精确推断，接近涨停但未封板不再误判", () => {
+    const run = screenRun("2026-01-05T15:30:00.000Z", [
+      candidate({ code: "600100", name: "接近涨停", industry: "化工", score: 70 }),
+      candidate({ code: "600200", name: "精确涨停", industry: "机械", score: 70 }),
+    ]);
+    const prices: QuantHistoryPriceBar[] = [
+      // 主板 10%：昨收 10.00 → 涨停价 11.00；10.98（+9.8%）超过旧阈值 0.098 但未封板
+      { code: "600100", date: "2026-01-05", close: 10 },
+      { code: "600100", date: "2026-01-06", open: 10.2, high: 10.98, low: 10.1, close: 10.98, pctChange: 0.098 },
+      { code: "600100", date: "2026-01-07", close: 11.1 },
+      // 昨收 10.00 → 收盘 11.00 精确封板
+      { code: "600200", date: "2026-01-05", close: 10 },
+      { code: "600200", date: "2026-01-06", open: 10.5, high: 11, low: 10.4, close: 11, pctChange: 0.1 },
+      { code: "600200", date: "2026-01-07", close: 11.2 },
+    ];
+
+    const result = adaptScreenRunsToBacktestInput([run], prices, { horizonBars: 1, entryLagBars: 1 });
+    const byCode = new Map(result.snapshots[0].candidates.map((item) => [item.code, item]));
+
+    expect(byCode.get("600100")).toMatchObject({ limitUp: false });
+    expect(byCode.get("600200")).toMatchObject({ limitUp: true });
+    // 调仓日 OHLCV 透传给回测层用于一字板/停牌判定
+    expect(byCode.get("600200")?.bar).toMatchObject({ open: 10.5, high: 11, low: 10.4, close: 11 });
+  });
+
+  it("零成交量且价格无波动的调仓日K线推断为停牌", () => {
+    const run = screenRun("2026-01-05T15:30:00.000Z", [candidate({ code: "600300", name: "停牌股", industry: "化工", score: 70 })]);
+    const prices: QuantHistoryPriceBar[] = [
+      { code: "600300", date: "2026-01-05", close: 10 },
+      { code: "600300", date: "2026-01-06", open: 10, high: 10, low: 10, close: 10, volume: 0 },
+      { code: "600300", date: "2026-01-07", close: 10.1 },
+    ];
+
+    const result = adaptScreenRunsToBacktestInput([run], prices, { horizonBars: 1, entryLagBars: 1 });
+    expect(result.snapshots[0].candidates[0]).toMatchObject({ code: "600300", suspended: true, tradable: false });
   });
 });

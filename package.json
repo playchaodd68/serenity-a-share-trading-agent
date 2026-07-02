@@ -23,6 +23,7 @@
     "calibration": "tsx src/cli.ts calibration",
     "resolutions": "tsx src/cli.ts resolutions",
     "graveyard": "tsx src/cli.ts graveyard",
+    "ladder": "tsx src/cli.ts ladder",
     "evals": "tsx src/cli.ts evals",
     "quant:adapt-history": "tsx src/cli.ts quant-adapt-history",
     "quant:backtest": "tsx src/cli.ts quant-backtest",
@@ -48,7 +49,10 @@
     "hermes:metadata": "tsx src/hermes/cli.ts --metadata",
     "hermes:chat": "tsx src/cli.ts chat",
     "chat": "tsx src/cli.ts chat",
-    "chat:server": "tsx src/cli.ts chat-server"
+    "chat:server": "tsx src/cli.ts chat-server",
+    "panel:dev": "npm --prefix panel run dev",
+    "panel:build": "npm --prefix panel run build",
+    "panel:server": "tsx src/cli.ts panel-server"
   },
   "keywords": [
     "a-share",

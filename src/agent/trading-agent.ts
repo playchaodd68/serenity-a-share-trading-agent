@@ -2,6 +2,7 @@ import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { getModel, Type, type Model } from "@earendil-works/pi-ai";
 import { getConfig } from "../config.js";
 import { callFfdTool, renderFfdToolResultWithStatus, type FfdAllowedToolName } from "../connectors/ffd.js";
+import { fetchLimitUpLadder, formatLadderReport, normalizeLadderDate } from "../connectors/limit-up-ladder.js";
 import { methodologySummary } from "../methodology.js";
 import { loadBearCases } from "../research/debate/bear-case.js";
 import { hybridSearchReportLibrary, renderHybridResults } from "../research/library-hybrid.js";
@@ -165,6 +166,23 @@ export function createTradingAgentTools(): AgentTool[] {
         { sources },
         sources.map((source) => `${source.id} [${source.tier}] ${source.title}`).join("\n"),
       );
+    },
+  };
+
+  const limitUpLadderTool: AgentTool = {
+    name: "limit_up_ladder",
+    label: "Limit-up Ladder",
+    description:
+      "东方财富涨停池/炸板池连板梯队快照（交易侧拥挤度观察）。连板高度/涨停潮属于负面拥挤信号，不构成买入依据；仅返回确定性数据（梯队、封单、炸板率），不做任何评分或排序。",
+    parameters: Type.Object({
+      date: Type.Optional(Type.String({ description: "YYYYMMDD 或 YYYY-MM-DD；默认当天" })),
+    }),
+    async execute(_toolCallId, params) {
+      const args = params as { date?: string };
+      const date = args.date ? normalizeLadderDate(args.date) : undefined;
+      if (args.date && !date) return textResult({ error: "invalid date" }, `无法解析日期: ${args.date}，请使用 YYYYMMDD 或 YYYY-MM-DD。`);
+      const snapshot = await fetchLimitUpLadder(date);
+      return textResult(snapshot, formatLadderReport(snapshot));
     },
   };
 
@@ -494,6 +512,7 @@ export function createTradingAgentTools(): AgentTool[] {
     librarySearchTool,
     methodologyTool,
     sourcesTool,
+    limitUpLadderTool,
     ffdHealthTool,
     ffdCapabilitiesTool,
     ffdNlTool,
