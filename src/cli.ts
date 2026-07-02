@@ -20,6 +20,16 @@ import { createTradingChatSession, promptTradingChatSession, runInteractiveChat,
 import { methodologySummary } from "./methodology.js";
 import { diagnoseRuntime, renderCronExample, renderDoctorReport } from "./operations.js";
 import { buildCalibrationSnapshot, renderCalibrationSnapshot, writeCalibrationSnapshot } from "./research/calibration.js";
+import {
+  bearKillCriteria,
+  completedBearCaseCodes,
+  loadBearCases,
+  renderBearCase,
+  runBearCasePass,
+  saveBearCase,
+} from "./research/debate/bear-case.js";
+import { renderVerdict, synthesizeVerdict } from "./research/debate/verdict.js";
+import { createDeepSeekClient } from "./research/debate/llm-client.js";
 import { renderAnswerSafetyEvals, renderSycophancyEvals, runAnswerSafetyEvals, runSycophancyPromptEvals } from "./research/evals.js";
 import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
 import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
@@ -455,7 +465,8 @@ async function runScreenPipeline(sendNotification = true) {
   const collectMatched = (candidates: Candidate[]) => {
     matched = candidates;
   };
-  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, onMatched: collectMatched });
+  const bearCases = completedBearCaseCodes(await loadBearCases());
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, onMatched: collectMatched });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
   if (cninfo.warnings.length > 0) {
     for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
@@ -466,7 +477,7 @@ async function runScreenPipeline(sendNotification = true) {
   }
   const run =
     cninfo.sources.length > 0
-      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, onMatched: collectMatched })
+      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, onMatched: collectMatched })
       : preliminaryRun;
   const completed = await writeScreenReport(run);
   const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
@@ -545,6 +556,49 @@ async function researchRefresh() {
   console.log(renderSycophancyEvals(sycophancyEvals));
   console.log(renderDoctorReport(doctorReport));
   if (!doctorReport.ok || evals.some((item) => !item.passed) || sycophancyEvals.some((item) => !item.passed)) process.exitCode = 1;
+}
+
+
+async function researchBear(codeArg?: string) {
+  const code = (codeArg ?? process.argv[3] ?? "").trim();
+  if (!code) {
+    console.error("Usage: npm run research:bear -- <stock code>");
+    process.exitCode = 1;
+    return;
+  }
+  const latest = await findLatestRun();
+  if (!latest) {
+    console.error("No screen run found. Run `npm run screen` first.");
+    process.exitCode = 1;
+    return;
+  }
+  const candidate = latest.candidates.find((item) => item.stock.code === code || item.stock.name.includes(code));
+  if (!candidate) {
+    console.error(`Candidate ${code} not found in latest run ${latest.runId}.`);
+    process.exitCode = 1;
+    return;
+  }
+  const client = createDeepSeekClient();
+  console.log(`Running adversarial bear-case pass for ${candidate.stock.code} ${candidate.stock.name} via ${client.label}...`);
+  const record = await runBearCasePass(candidate, client, { runId: latest.runId });
+  await saveBearCase(record);
+  console.log(renderBearCase(record));
+  const verdict = synthesizeVerdict(candidate, record.report);
+  console.log("");
+  console.log(renderVerdict(verdict));
+  if (record.report != null) {
+    const watchlist = await loadWatchlist();
+    const entry = watchlist.find((item) => item.code === candidate.stock.code);
+    if (entry) {
+      const extra = bearKillCriteria(record, record.generatedAt);
+      const existingIds = new Set((entry.killCriteria ?? []).map((item) => item.id));
+      const merged = [...(entry.killCriteria ?? []), ...extra.filter((item) => !existingIds.has(item.id))];
+      const updated = watchlist.map((item) => (item.code === entry.code ? { ...item, killCriteria: merged } : item));
+      await saveWatchlist(updated);
+      console.log(`Registered ${extra.length} bear-derived kill criteria on watchlist entry ${entry.code}.`);
+    }
+  }
+  if (record.status !== "completed") process.exitCode = 1;
 }
 
 async function harness() {
@@ -871,6 +925,18 @@ async function feishuServer() {
         if (!arg.trim()) return "Usage: /why <code-or-name>";
         return explainCandidate(run, arg);
       }
+      case "/bear": {
+        const run = await findLatestRun();
+        if (!run) return "No screen report JSON found under reports/. Run /screen first.";
+        if (!arg.trim()) return "Usage: /bear <code-or-name>";
+        const query = arg.trim();
+        const candidate = run.candidates.find((item) => item.stock.code === query || item.stock.name.includes(query));
+        if (!candidate) return `Candidate ${query} not found in latest run ${run.runId}.`;
+        const record = await runBearCasePass(candidate, createDeepSeekClient(), { runId: run.runId });
+        await saveBearCase(record);
+        const verdict = synthesizeVerdict(candidate, record.report);
+        return [renderBearCase(record), "", renderVerdict(verdict)].join("\n");
+      }
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -993,6 +1059,9 @@ async function main() {
       break;
     case "research-refresh":
       await researchRefresh();
+      break;
+    case "research-bear":
+      await researchBear();
       break;
     case "watchlist":
       await showWatchlist();
