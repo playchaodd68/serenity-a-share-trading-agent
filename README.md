@@ -46,6 +46,7 @@ npm run review
 - `npm run graveyard`: render the graveyard summary (passed-over / killed / downgraded theses) and the survivors-only vs combined hit rate.
 - `npm run library:search -- <keyword>`: hybrid retrieval (BM25 + dense embeddings fused via RRF) over the accepted local report library. Embedding provider priority: SiliconFlow Qwen3-Embedding-8B (set `SILICONFLOW_API_KEY`) -> local Ollama bge-m3 -> lexical-only degradation. Also exposed as the agent tool `search_report_library` and Feishu `/library <keyword>`.
 - `npm run library:embed`: build/refresh the local embedding index incrementally (auto-refreshed after reports:convert and reports:accept-quality; switching models triggers a full rebuild).
+- `npm run library:company -- <name>`: query a company's aggregated claim history (auto company dossiers live in the vault `companies/` folder; Feishu `/company <name>`).
 - `npm run library:eval`: run the golden retrieval eval (evals/library-retrieval.json, report-level recall@5/@10 + MRR) in lexical-only and hybrid modes — run before and after any retrieval change.
 - `npm run reports:rechunk`: rebuild chunks/claims/evidence for the processed library with the token-bounded chunker.
 - `npm run calibration`: rebuild the latest calibration snapshot, resolve decision-log entries, print the sycophancy slice (portfolio-related vs unrelated optimism/hit-rate gap) and the Thompson-sampling research-direction suggestion.
@@ -130,7 +131,8 @@ Set `FEISHU_WEBHOOK_URL` to send screening summaries. Set `FEISHU_VERIFICATION_T
 - `/reports-reject <id>`
 - `/archive-obsidian`: manually refresh the Obsidian knowledgebase
 - `/watchlist`
-- `/library <keyword>`: hybrid search over the local accepted report library
+- `/library <keyword>`: hybrid search over the local accepted report library (results carry obsidian:// note links and raw file paths)
+- `/company <name>`: aggregated claim history for a company from the local library
 - `/bear <code>`: run the adversarial bear-case pass for a candidate
 - `/portfolio-review`: read-only holdings overlay (never feeds back into scoring)
 - `/calibration`

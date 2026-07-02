@@ -603,6 +603,50 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
     return false;
   }
 
+  // 认证自身的三个端点（login/logout/status）保持开放，其余受保护路径由下方统一
+  // 入口拦截——不允许任何路由自行判断鉴权（参考项目的 save 端点正是这样漏掉的）。
+  async function handleAuthRoutes(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
+    if (url.pathname !== "/api/auth" && !url.pathname.startsWith("/api/auth/")) return false;
+
+    if (request.method === "GET" && url.pathname === "/api/auth/status") {
+      sendJson(response, 200, { required: auth.required, authenticated: auth.isAuthenticated(request) });
+      return true;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/login") {
+      if (!auth.required) {
+        sendJson(response, 200, { ok: true });
+        return true;
+      }
+      let body: { password?: unknown };
+      try {
+        body = await readJsonBody<{ password?: unknown }>(request);
+      } catch {
+        sendJson(response, 400, { error: "请求体不是合法 JSON。" });
+        return true;
+      }
+      // 限速按 socket 对端地址计数：X-Forwarded-For 可由客户端伪造，绝不采信。
+      const outcome = await auth.login(body.password, request.socket.remoteAddress ?? "");
+      if (outcome.status === 200 && outcome.token) {
+        response.setHeader("set-cookie", auth.sessionCookie(outcome.token));
+        sendJson(response, 200, { ok: true });
+      } else {
+        sendJson(response, outcome.status, { error: outcome.error ?? "登录失败。" });
+      }
+      return true;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+      await auth.logout(request);
+      response.setHeader("set-cookie", auth.clearedSessionCookie());
+      sendJson(response, 200, { ok: true });
+      return true;
+    }
+
+    sendJson(response, 404, { error: "Not found" });
+    return true;
+  }
+
   const server = http.createServer(async (request, response) => {
     try {
       if (request.method === "OPTIONS") {
@@ -611,6 +655,14 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
       }
 
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+
+      if (await handleAuthRoutes(request, response, url)) return;
+
+      // 统一鉴权入口：/api/*（除 /api/auth/*）与 /chat、/reset 全部先过这里。
+      if (auth.requiresAuth(url.pathname) && !auth.isAuthenticated(request)) {
+        sendJson(response, 401, { error: "unauthorized" });
+        return;
+      }
 
       if (url.pathname.startsWith("/api/") || url.pathname === "/api") {
         if (request.method !== "GET") {

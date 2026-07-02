@@ -136,7 +136,7 @@ describe("hybrid retrieval", () => {
     const output = await hybridSearchReportLibrary(
       "靶材 国产替代",
       { topK: 2 },
-      { embeddingClient: fakeClient, embeddingIndex: index, searchIndex },
+      { embeddingClient: fakeClient, embeddingIndex: index, searchIndex, reranker: null },
     );
     expect(output.mode).toBe("hybrid");
     expect(output.results[0]?.document.reportId).toBe("REP-SEMANTIC");
@@ -150,7 +150,7 @@ describe("hybrid retrieval", () => {
   });
 
   it("degrades to lexical-only with an explicit note when no embedding index exists", async () => {
-    const output = await hybridSearchReportLibrary("光模块", { topK: 2 }, { embeddingIndex: null, searchIndex });
+    const output = await hybridSearchReportLibrary("光模块", { topK: 2 }, { embeddingIndex: null, searchIndex, reranker: null });
     expect(output.mode).toBe("lexical-only");
     expect(output.note).toContain("library:embed");
     expect(output.results[0]?.document.reportId).toBe("REP-LEXICAL");
@@ -165,7 +165,7 @@ describe("hybrid retrieval", () => {
       },
     };
     const index = await loadEmbeddingIndex(indexPath);
-    const output = await hybridSearchReportLibrary("光模块", { topK: 2 }, { embeddingClient: broken, embeddingIndex: index, searchIndex });
+    const output = await hybridSearchReportLibrary("光模块", { topK: 2 }, { embeddingClient: broken, embeddingIndex: index, searchIndex, reranker: null });
     expect(output.mode).toBe("lexical-only");
     expect(output.note).toContain("退化为词法检索");
     expect(output.results.length).toBeGreaterThan(0);
@@ -173,9 +173,42 @@ describe("hybrid retrieval", () => {
 
   it("renders mode and provenance", async () => {
     const index = await loadEmbeddingIndex(indexPath);
-    const output = await hybridSearchReportLibrary("溅射", { topK: 2 }, { embeddingClient: fakeClient, embeddingIndex: index, searchIndex });
+    const output = await hybridSearchReportLibrary("溅射", { topK: 2 }, { embeddingClient: fakeClient, embeddingIndex: index, searchIndex, reranker: null });
     const rendered = renderHybridResults("溅射", output);
     expect(rendered).toContain("模式 hybrid");
     expect(rendered).toContain("P1-REP-SEMANTIC");
+  });
+});
+
+describe("reranker stage (C layer)", () => {
+  it("reorders the fused pool by cross-encoder scores and marks the mode", async () => {
+    const index = await loadEmbeddingIndex(indexPath);
+    const flipReranker = {
+      label: "fake/flip",
+      // Score REP-LEXICAL highest regardless of fusion order.
+      rerank: async (_query: string, documents: string[]) =>
+        documents
+          .map((document, position) => ({ index: position, relevanceScore: document.includes("光模块") ? 0.99 : 0.01 }))
+          .sort((a, b) => b.relevanceScore - a.relevanceScore),
+    };
+    const output = await hybridSearchReportLibrary(
+      "溅射",
+      { topK: 2 },
+      { embeddingClient: fakeClient, embeddingIndex: index, searchIndex, reranker: flipReranker },
+    );
+    expect(output.mode).toBe("hybrid+rerank");
+    expect(output.results[0]?.document.reportId).toBe("REP-LEXICAL");
+  });
+
+  it("keeps RRF order when the reranker throws (best-effort)", async () => {
+    const index = await loadEmbeddingIndex(indexPath);
+    const broken = { label: "fake/broken", rerank: async () => { throw new Error("rerank down"); } };
+    const output = await hybridSearchReportLibrary(
+      "溅射",
+      { topK: 2 },
+      { embeddingClient: fakeClient, embeddingIndex: index, searchIndex, reranker: broken },
+    );
+    expect(output.mode).toBe("hybrid");
+    expect(output.results[0]?.document.reportId).toBe("REP-SEMANTIC");
   });
 });

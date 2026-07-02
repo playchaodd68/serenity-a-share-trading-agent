@@ -1,30 +1,280 @@
 {
-  "version": 1,
+  "version": 2,
   "note": "研报库检索金标集:query 按用户真实问法措辞(刻意不复制标题),relevant 为可接受的 sourceRecordId 列表。改动检索层前后都要跑 npm run library:eval 对比 recall@k/MRR。",
   "cases": [
-    { "id": "glass-substrate", "query": "玻璃基板在先进封装里的作用和产业化进展", "relevant": ["P1-FFD-REPORT-624E10987BF4", "P1-FFD-REPORT-8DC476486972", "P1-FFD-REPORT-93CA4844F993", "P1-FFD-REPORT-9643E72C10DF"] },
-    { "id": "silica-powder", "query": "硅微粉需求为什么涨 覆铜板上游材料", "relevant": ["P1-FFD-REPORT-DD05B2533307", "P1-FFD-REPORT-FF5880C33758"] },
-    { "id": "ccl-price", "query": "CCL高速覆铜板涨价传导", "relevant": ["P1-FFD-REPORT-76A312D0DFCA", "P1-FFD-REPORT-9C04F7D29530", "P1-FFD-REPORT-C926FAAB76C8", "P1-FFD-REPORT-E635593609C5"] },
-    { "id": "npo-pluggable", "query": "NPO和可插拔光模块谁是主流技术路线", "relevant": ["P1-FFD-REPORT-61367C04EA2F", "P1-FFD-REPORT-7DFFE337CC64", "P1-FFD-REPORT-842F9EB0B83C", "P1-FFD-REPORT-BC576EB5834E", "P1-FFD-REPORT-D764BCAA3F9B"] },
-    { "id": "storage-capex", "query": "全球存储进入扩产周期的证据", "relevant": ["P1-FFD-REPORT-A36BD9757411", "P1-FFD-REPORT-21BDDFF48FEC", "P1-FFD-REPORT-CA1CC02489A8", "P1-FFD-REPORT-69726A31AE77", "P1-FFD-REPORT-B0113DAA0505"] },
-    { "id": "hbm-dram-price", "query": "DRAM HBM 合约价走势和美光指引", "relevant": ["P1-FFD-REPORT-61B2D1D92380", "P1-FFD-REPORT-A6C524CB0491", "P1-FFD-REPORT-B0113DAA0505", "P1-FFD-REPORT-CA1CC02489A8"] },
-    { "id": "huahong", "query": "华虹特色工艺12英寸产能逻辑", "relevant": ["P1-FFD-REPORT-2376A25E55D2", "P1-FFD-REPORT-7B160FC1226D"] },
-    { "id": "ultrasonic", "query": "超声焊接检测设备龙头是谁", "relevant": ["P1-FFD-REPORT-39D1C39254B3", "P1-FFD-REPORT-9FDD787B93C2"] },
-    { "id": "diamond-cooling", "query": "AI芯片散热新材料 金刚石", "relevant": ["P1-FFD-REPORT-C19D906B16CB"] },
-    { "id": "solder-paste", "query": "光模块用高端锡膏国产化", "relevant": ["P1-FFD-REPORT-8A447D9334D8", "P1-FFD-REPORT-B2C93118E99A"] },
-    { "id": "humanoid-harmonic", "query": "人形机器人谐波减速器订单强劲", "relevant": ["P1-FFD-REPORT-7178541A4F1E", "P1-FFD-REPORT-C84A6FFDC11C", "P1-FFD-REPORT-FE00B5FF7643", "P1-FFD-REPORT-F3B38A64EB5C"] },
-    { "id": "om-equipment", "query": "光模块厂商扩产带动哪些设备需求", "relevant": ["P1-FFD-REPORT-057453D6E11D", "P1-FFD-REPORT-D7DABB209AE7", "P1-FFD-REPORT-E4441EB559BD", "P1-FFD-REPORT-E1526EC45243"] },
-    { "id": "mlcc", "query": "MLCC涨价和竞争格局", "relevant": ["P1-FFD-REPORT-3230C36C8161", "P1-FFD-REPORT-6358D019160E", "P1-FFD-REPORT-74A30327E5BB", "P1-FFD-REPORT-E2480F64ED75", "P1-FFD-REPORT-4B02B550F603", "P1-FFD-REPORT-AB45072F12C2"] },
-    { "id": "power-semi", "query": "功率半导体涨价潮 英飞凌意法", "relevant": ["P1-FFD-REPORT-336756DD8CDF", "P1-FFD-REPORT-60B054D8F827", "P1-FFD-REPORT-FC0C16EB51E4"] },
-    { "id": "optical-test", "query": "光通信测试仪器国产替代标的", "relevant": ["P1-FFD-REPORT-91BFE18BC90B"] },
-    { "id": "zhongji", "query": "中际旭创毛利率提升和外资目标价", "relevant": ["P1-FFD-REPORT-8FBED204048A"] },
-    { "id": "xinyisheng", "query": "新易盛1.6T光模块什么时候放量", "relevant": ["P1-FFD-REPORT-6437857CD4BB", "P1-FFD-REPORT-646AE61319EC", "P1-FFD-REPORT-12F1EF6D089B", "P1-FFD-REPORT-1AB8DFA633D1"] },
-    { "id": "dongshan", "query": "东山精密收购切入光芯片光模块", "relevant": ["P1-FFD-REPORT-1B2183274E09", "P1-FFD-REPORT-4D2BD2F75126", "P1-FFD-REPORT-FF002EEB539F", "P1-FFD-REPORT-AD9D443C1696", "P1-FFD-REPORT-D010A3A93A3C"] },
-    { "id": "montage", "query": "内存接口芯片 AI运力层 澜起", "relevant": ["P1-FFD-REPORT-71D9F1CF4CBC", "P1-FFD-REPORT-C56F22B35D13"] },
-    { "id": "yield-silicon-photonics", "query": "芯片良率工具厂商切入硅光", "relevant": ["P1-FFD-REPORT-484F885D04DC"] },
-    { "id": "electronic-gas", "query": "电子大宗气体氦气涨价受益公司", "relevant": ["P1-FFD-REPORT-43CE24506CE0"] },
-    { "id": "eda", "query": "国产EDA工具厂商生态布局", "relevant": ["P1-FFD-REPORT-99DCCA856E47"] },
-    { "id": "niche-nand", "query": "利基存储NAND涨价逻辑", "relevant": ["P1-FFD-REPORT-1572B95D9D7B", "P1-FFD-REPORT-1B609C1420BA", "P1-FFD-REPORT-53E80FA08D2D", "P1-FFD-REPORT-9108E09DB3C6"] },
-    { "id": "ai-power-supply", "query": "AI服务器供电高压直流带来的功率器件机会", "relevant": ["P1-FFD-REPORT-489F65C4B384", "P1-FFD-REPORT-336756DD8CDF"] }
+    {
+      "id": "glass-substrate",
+      "query": "玻璃基板在先进封装里的作用和产业化进展",
+      "relevant": [
+        "P1-FFD-REPORT-624E10987BF4",
+        "P1-FFD-REPORT-8DC476486972",
+        "P1-FFD-REPORT-93CA4844F993",
+        "P1-FFD-REPORT-9643E72C10DF"
+      ]
+    },
+    {
+      "id": "silica-powder",
+      "query": "硅微粉需求为什么涨 覆铜板上游材料",
+      "relevant": [
+        "P1-FFD-REPORT-DD05B2533307",
+        "P1-FFD-REPORT-FF5880C33758"
+      ]
+    },
+    {
+      "id": "ccl-price",
+      "query": "CCL高速覆铜板涨价传导",
+      "relevant": [
+        "P1-FFD-REPORT-76A312D0DFCA",
+        "P1-FFD-REPORT-9C04F7D29530",
+        "P1-FFD-REPORT-C926FAAB76C8",
+        "P1-FFD-REPORT-E635593609C5"
+      ]
+    },
+    {
+      "id": "npo-pluggable",
+      "query": "NPO和可插拔光模块谁是主流技术路线",
+      "relevant": [
+        "P1-FFD-REPORT-61367C04EA2F",
+        "P1-FFD-REPORT-7DFFE337CC64",
+        "P1-FFD-REPORT-842F9EB0B83C",
+        "P1-FFD-REPORT-BC576EB5834E",
+        "P1-FFD-REPORT-D764BCAA3F9B"
+      ]
+    },
+    {
+      "id": "storage-capex",
+      "query": "全球存储进入扩产周期的证据",
+      "relevant": [
+        "P1-FFD-REPORT-A36BD9757411",
+        "P1-FFD-REPORT-21BDDFF48FEC",
+        "P1-FFD-REPORT-CA1CC02489A8",
+        "P1-FFD-REPORT-69726A31AE77",
+        "P1-FFD-REPORT-B0113DAA0505"
+      ]
+    },
+    {
+      "id": "hbm-dram-price",
+      "query": "DRAM HBM 合约价走势和美光指引",
+      "relevant": [
+        "P1-FFD-REPORT-61B2D1D92380",
+        "P1-FFD-REPORT-A6C524CB0491",
+        "P1-FFD-REPORT-B0113DAA0505",
+        "P1-FFD-REPORT-CA1CC02489A8"
+      ]
+    },
+    {
+      "id": "huahong",
+      "query": "华虹特色工艺12英寸产能逻辑",
+      "relevant": [
+        "P1-FFD-REPORT-2376A25E55D2",
+        "P1-FFD-REPORT-7B160FC1226D"
+      ]
+    },
+    {
+      "id": "ultrasonic",
+      "query": "超声焊接检测设备龙头是谁",
+      "relevant": [
+        "P1-FFD-REPORT-39D1C39254B3",
+        "P1-FFD-REPORT-9FDD787B93C2"
+      ]
+    },
+    {
+      "id": "diamond-cooling",
+      "query": "AI芯片散热新材料 金刚石",
+      "relevant": [
+        "P1-FFD-REPORT-C19D906B16CB"
+      ]
+    },
+    {
+      "id": "solder-paste",
+      "query": "光模块用高端锡膏国产化",
+      "relevant": [
+        "P1-FFD-REPORT-8A447D9334D8",
+        "P1-FFD-REPORT-B2C93118E99A"
+      ]
+    },
+    {
+      "id": "humanoid-harmonic",
+      "query": "人形机器人谐波减速器订单强劲",
+      "relevant": [
+        "P1-FFD-REPORT-7178541A4F1E",
+        "P1-FFD-REPORT-C84A6FFDC11C",
+        "P1-FFD-REPORT-FE00B5FF7643",
+        "P1-FFD-REPORT-F3B38A64EB5C"
+      ]
+    },
+    {
+      "id": "om-equipment",
+      "query": "光模块厂商扩产带动哪些设备需求",
+      "relevant": [
+        "P1-FFD-REPORT-057453D6E11D",
+        "P1-FFD-REPORT-D7DABB209AE7",
+        "P1-FFD-REPORT-E4441EB559BD",
+        "P1-FFD-REPORT-E1526EC45243"
+      ]
+    },
+    {
+      "id": "mlcc",
+      "query": "MLCC涨价和竞争格局",
+      "relevant": [
+        "P1-FFD-REPORT-3230C36C8161",
+        "P1-FFD-REPORT-6358D019160E",
+        "P1-FFD-REPORT-74A30327E5BB",
+        "P1-FFD-REPORT-E2480F64ED75",
+        "P1-FFD-REPORT-4B02B550F603",
+        "P1-FFD-REPORT-AB45072F12C2"
+      ]
+    },
+    {
+      "id": "power-semi",
+      "query": "功率半导体涨价潮 英飞凌意法",
+      "relevant": [
+        "P1-FFD-REPORT-336756DD8CDF",
+        "P1-FFD-REPORT-60B054D8F827",
+        "P1-FFD-REPORT-FC0C16EB51E4"
+      ]
+    },
+    {
+      "id": "optical-test",
+      "query": "光通信测试仪器国产替代标的",
+      "relevant": [
+        "P1-FFD-REPORT-91BFE18BC90B"
+      ]
+    },
+    {
+      "id": "zhongji",
+      "query": "中际旭创毛利率提升和外资目标价",
+      "relevant": [
+        "P1-FFD-REPORT-8FBED204048A"
+      ]
+    },
+    {
+      "id": "xinyisheng",
+      "query": "新易盛1.6T光模块什么时候放量",
+      "relevant": [
+        "P1-FFD-REPORT-6437857CD4BB",
+        "P1-FFD-REPORT-646AE61319EC",
+        "P1-FFD-REPORT-12F1EF6D089B",
+        "P1-FFD-REPORT-1AB8DFA633D1"
+      ]
+    },
+    {
+      "id": "dongshan",
+      "query": "东山精密收购切入光芯片光模块",
+      "relevant": [
+        "P1-FFD-REPORT-1B2183274E09",
+        "P1-FFD-REPORT-4D2BD2F75126",
+        "P1-FFD-REPORT-FF002EEB539F",
+        "P1-FFD-REPORT-AD9D443C1696",
+        "P1-FFD-REPORT-D010A3A93A3C"
+      ]
+    },
+    {
+      "id": "montage",
+      "query": "内存接口芯片 AI运力层 澜起",
+      "relevant": [
+        "P1-FFD-REPORT-71D9F1CF4CBC",
+        "P1-FFD-REPORT-C56F22B35D13"
+      ]
+    },
+    {
+      "id": "yield-silicon-photonics",
+      "query": "芯片良率工具厂商切入硅光",
+      "relevant": [
+        "P1-FFD-REPORT-484F885D04DC"
+      ]
+    },
+    {
+      "id": "electronic-gas",
+      "query": "电子大宗气体氦气涨价受益公司",
+      "relevant": [
+        "P1-FFD-REPORT-43CE24506CE0"
+      ]
+    },
+    {
+      "id": "eda",
+      "query": "国产EDA工具厂商生态布局",
+      "relevant": [
+        "P1-FFD-REPORT-99DCCA856E47"
+      ]
+    },
+    {
+      "id": "niche-nand",
+      "query": "利基存储NAND涨价逻辑",
+      "relevant": [
+        "P1-FFD-REPORT-1572B95D9D7B",
+        "P1-FFD-REPORT-1B609C1420BA",
+        "P1-FFD-REPORT-53E80FA08D2D",
+        "P1-FFD-REPORT-9108E09DB3C6"
+      ]
+    },
+    {
+      "id": "ai-power-supply",
+      "query": "AI服务器供电高压直流带来的功率器件机会",
+      "relevant": [
+        "P1-FFD-REPORT-489F65C4B384",
+        "P1-FFD-REPORT-336756DD8CDF"
+      ]
+    },
+    {
+      "id": "hard-agg-price-rise",
+      "query": "最近哪些材料环节在涨价",
+      "relevant": [
+        "P1-FFD-REPORT-76A312D0DFCA",
+        "P1-FFD-REPORT-9C04F7D29530",
+        "P1-FFD-REPORT-C926FAAB76C8",
+        "P1-FFD-REPORT-3230C36C8161",
+        "P1-FFD-REPORT-336756DD8CDF",
+        "P1-FFD-REPORT-FF5880C33758",
+        "P1-FFD-REPORT-E2480F64ED75"
+      ]
+    },
+    {
+      "id": "hard-packaging-materials",
+      "query": "先进封装带来的新材料机会",
+      "relevant": [
+        "P1-FFD-REPORT-624E10987BF4",
+        "P1-FFD-REPORT-8DC476486972",
+        "P1-FFD-REPORT-93CA4844F993",
+        "P1-FFD-REPORT-9643E72C10DF",
+        "P1-FFD-REPORT-C19D906B16CB",
+        "P1-FFD-REPORT-5A63F18BF778",
+        "P1-FFD-REPORT-B2C93118E99A"
+      ]
+    },
+    {
+      "id": "hard-time-storage",
+      "query": "存储板块七月最新观点",
+      "relevant": [
+        "P1-FFD-REPORT-A36BD9757411",
+        "P1-FFD-REPORT-1572B95D9D7B",
+        "P1-FFD-REPORT-21BDDFF48FEC",
+        "P1-FFD-REPORT-02B089BCE900"
+      ]
+    },
+    {
+      "id": "hard-paraphrase-gs-innolight",
+      "query": "外资投行对旭创的最新评级和目标价",
+      "relevant": [
+        "P1-FFD-REPORT-8FBED204048A"
+      ]
+    },
+    {
+      "id": "hard-paraphrase-harmonic",
+      "query": "海外大行调研国产减速器厂商的结论",
+      "relevant": [
+        "P1-FFD-REPORT-7178541A4F1E",
+        "P1-FFD-REPORT-C84A6FFDC11C"
+      ]
+    },
+    {
+      "id": "hard-fab-wafer",
+      "query": "晶圆代工和大硅片处于什么位置",
+      "relevant": [
+        "P1-FFD-REPORT-A2A45C26B956",
+        "P1-FFD-REPORT-2376A25E55D2",
+        "P1-FFD-REPORT-7B160FC1226D"
+      ]
+    }
   ]
 }
