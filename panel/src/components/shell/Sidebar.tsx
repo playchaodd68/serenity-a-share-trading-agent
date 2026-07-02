@@ -1,17 +1,21 @@
 // Adapted from tickflow-stock-panel (MIT) — 侧边栏"品牌块 / 导航 / 底部状态区"三段式骨架；
 // 升级点：导航分组（研究/市场/评估/账户），底部为数据新鲜度区（读 /api/health）。
 // 品牌 violet 全站仅允许出现在此品牌块。
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   BookOpen,
   FlaskConical,
   Layers,
   LayoutDashboard,
+  LogOut,
   Target,
   Wallet,
 } from "lucide-react";
 import { NavGroup, type NavItem } from "@/components/shell/NavGroup";
-import { useHealth } from "@/lib/useSharedQueries";
+import { api } from "@/lib/api";
+import { useAuthStatus, useHealth } from "@/lib/useSharedQueries";
 import { fmtRelative } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
@@ -73,6 +77,44 @@ function DataFreshness() {
   );
 }
 
+/** 退出登录 — 仅在服务端启用了密码保护（status.required）时显示。 */
+function LogoutButton() {
+  const { data: status } = useAuthStatus();
+  const queryClient = useQueryClient();
+  const [pending, setPending] = useState(false);
+
+  if (!status?.required) return null;
+
+  const handleLogout = async () => {
+    if (pending) return;
+    setPending(true);
+    try {
+      await api.logout();
+    } finally {
+      setPending(false);
+      // auth-status 变为未认证后 LoginGate 收口，业务查询一并作废。
+      await queryClient.invalidateQueries();
+    }
+  };
+
+  return (
+    <div className="border-t border-line px-2 py-1.5">
+      <button
+        type="button"
+        onClick={handleLogout}
+        disabled={pending}
+        className={cn(
+          "flex w-full items-center gap-1.5 rounded-btn px-2 py-1.5 text-2xs text-ink-3",
+          "transition-colors duration-fast ease-smooth hover:bg-raised hover:text-ink disabled:opacity-50",
+        )}
+      >
+        <LogOut className="h-3.5 w-3.5" aria-hidden />
+        {pending ? "退出中…" : "退出登录"}
+      </button>
+    </div>
+  );
+}
+
 interface SidebarProps {
   /** 移动端抽屉里点击导航后收起。 */
   onNavigate?: () => void;
@@ -104,6 +146,7 @@ export function Sidebar({ onNavigate, className }: SidebarProps) {
       </nav>
 
       <DataFreshness />
+      <LogoutButton />
     </aside>
   );
 }

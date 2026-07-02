@@ -6,6 +6,9 @@ export const QK = {
   // 全局 / 共享（Layout 底部新鲜度区）
   health: ["health"] as const,
 
+  // 认证状态（LoginGate / Sidebar 退出按钮共用）
+  authStatus: ["auth-status"] as const,
+
   // 总览
   overview: ["overview"] as const,
 

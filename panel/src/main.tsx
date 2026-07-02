@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router-dom";
+import { LoginGate } from "@/components/auth/LoginGate";
 import { router } from "@/router";
 import "@/styles/global.css";
 
@@ -27,7 +28,9 @@ if (!rootEl) throw new Error("找不到 #root 挂载点");
 createRoot(rootEl).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <LoginGate>
+        <RouterProvider router={router} />
+      </LoginGate>
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -11,6 +11,11 @@ import type { FfdReportStatus, GraveyardReason } from "@/lib/types";
 const ARTIFACT_STALE_MS = 60_000;
 const LADDER_STALE_MS = 300_000;
 
+/** 认证状态 — LoginGate 与 Sidebar 退出按钮共用；开放端点，失败不重试（离线时放行进壳）。 */
+export function useAuthStatus() {
+  return useQuery({ queryKey: QK.authStatus, queryFn: api.authStatus, retry: false, staleTime: Infinity });
+}
+
 /** 服务健康 + 数据新鲜度 — Sidebar 底部专用，全局唯一轮询点（60s）。 */
 export function useHealth() {
   return useQuery({

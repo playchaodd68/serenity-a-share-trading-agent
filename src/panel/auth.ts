@@ -16,6 +16,10 @@ const SESSION_MAX_AGE_SECONDS = 2_592_000; // 30 天
 const SESSION_TTL_MS = SESSION_MAX_AGE_SECONDS * 1000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MS = 5 * 60_000;
+// 限速表防撑爆：失败记录超过锁定窗口即失去意义，可回收；容量上限防海量伪造源地址
+// （尤其 IPv6 /64 轮换）让 Map 无界增长——超限时按插入序淘汰最旧条目。
+const RATE_ENTRY_TTL_MS = LOGIN_LOCK_MS;
+const RATE_MAP_MAX_ENTRIES = 4096;
 
 interface SessionRecord {
   createdAt: string;
@@ -27,6 +31,7 @@ type PersistedSessions = Record<string, SessionRecord>;
 interface RateState {
   failures: number;
   lockedUntil: number;
+  lastFailureAt: number;
 }
 
 export interface PanelAuthOptions {
@@ -134,11 +139,27 @@ export async function createPanelAuth(options: PanelAuthOptions): Promise<PanelA
     return true;
   }
 
+  function pruneRateEntries(nowMs: number): void {
+    for (const [address, state] of rateByAddress) {
+      if (state.lockedUntil <= nowMs && nowMs - state.lastFailureAt > RATE_ENTRY_TTL_MS) {
+        rateByAddress.delete(address);
+      }
+    }
+    // 仍超限则按插入序淘汰最旧条目（Map 保持插入顺序），保证锁定中的近期条目尽量存活。
+    if (rateByAddress.size > RATE_MAP_MAX_ENTRIES) {
+      for (const address of rateByAddress.keys()) {
+        if (rateByAddress.size <= RATE_MAP_MAX_ENTRIES) break;
+        rateByAddress.delete(address);
+      }
+    }
+  }
+
   async function login(input: unknown, remoteAddress: string): Promise<LoginOutcome> {
     // 限速主体是 TCP 连接对端地址：X-Forwarded-For 由客户端任意填写、可伪造，
     // 参考项目正是用 XFF 判定"内网请求"被绕过，这里绝不参与判定。
     const address = remoteAddress || "unknown";
     const nowMs = now().getTime();
+    pruneRateEntries(nowMs);
     const state = rateByAddress.get(address);
     if (state && state.lockedUntil > nowMs) {
       return { status: 429, error: "登录失败次数过多，该地址已锁定，请 5 分钟后再试。" };
@@ -151,6 +172,7 @@ export async function createPanelAuth(options: PanelAuthOptions): Promise<PanelA
       rateByAddress.set(address, {
         failures,
         lockedUntil: failures >= LOGIN_FAILURE_LIMIT ? nowMs + LOGIN_LOCK_MS : 0,
+        lastFailureAt: nowMs,
       });
       return { status: 401, error: "密码错误。" };
     }

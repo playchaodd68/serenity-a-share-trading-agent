@@ -24,6 +24,15 @@ import type {
   WatchlistEntry,
 } from "@/lib/types";
 
+/** 任意请求收到 401 时派发的全局事件——LoginGate 监听后回到登录门。 */
+export const UNAUTHORIZED_EVENT = "serenity:unauthorized";
+
+/** GET /api/auth/status 的响应（开放端点）。 */
+export interface AuthStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
 async function parseErrorMessage(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as { error?: string; message?: string };
@@ -33,27 +42,30 @@ async function parseErrorMessage(res: Response): Promise<string> {
   }
 }
 
+async function failWith(res: Response): Promise<never> {
+  const msg = await parseErrorMessage(res);
+  if (res.status === 401) {
+    // 401 交给 LoginGate 全屏接管，不再叠加错误 toast。
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  } else {
+    toast(msg, "error");
+  }
+  throw new Error(msg);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  if (!res.ok) {
-    const msg = await parseErrorMessage(res);
-    toast(msg, "error");
-    throw new Error(msg);
-  }
+  if (!res.ok) return failWith(res);
   return res.json() as Promise<T>;
 }
 
 /** markdown 等纯文本响应（/api/screens/:runId/report）。 */
 async function requestText(path: string): Promise<string> {
   const res = await fetch(path);
-  if (!res.ok) {
-    const msg = await parseErrorMessage(res);
-    toast(msg, "error");
-    throw new Error(msg);
-  }
+  if (!res.ok) return failWith(res);
   return res.text();
 }
 
@@ -133,4 +145,9 @@ export const api = {
   // 既有 chat-server 端点（S6 Chat 抽屉使用）
   chat: (payload: { sessionId?: string; message: string }) =>
     request<ChatResponse>("/chat", { method: "POST", body: JSON.stringify(payload) }),
+
+  // 认证（三个端点自身开放；见 src/panel/auth.ts）
+  authStatus: () => request<AuthStatus>("/api/auth/status"),
+  login: (password: string) => request<{ ok: boolean }>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
 };
