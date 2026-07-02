@@ -43,6 +43,7 @@ import { createDeepSeekClient } from "./research/debate/llm-client.js";
 import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
 import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
 import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
+import { getLibrarySearchIndex, renderLibrarySearchResults, searchReportLibrary } from "./research/library-search.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
 import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
 import { DEFAULT_THEMES } from "./methodology.js";
@@ -677,6 +678,19 @@ async function resolutionsUpdate() {
   console.log(`Total resolutions on ledger: ${merged.length}. Run npm run calibration to refresh Brier/slices.`);
 }
 
+
+async function librarySearchCommand(queryArg?: string) {
+  const query = (queryArg ?? process.argv.slice(3).join(" ")).trim();
+  if (!query) {
+    console.error("Usage: npm run library:search -- <关键词>");
+    process.exitCode = 1;
+    return;
+  }
+  const results = await searchReportLibrary(query);
+  const index = await getLibrarySearchIndex();
+  console.log(renderLibrarySearchResults(query, results, { reportCount: index.reportCount }));
+}
+
 async function harness() {
   const result = await runHarness();
   for (const item of result.checks) {
@@ -1038,6 +1052,12 @@ async function feishuServer() {
       }
       case "/portfolio-review":
         return portfolioReview();
+      case "/library": {
+        if (!arg.trim()) return "Usage: /library <关键词> — 检索本地已入库研报";
+        const results = await searchReportLibrary(arg.trim());
+        const index = await getLibrarySearchIndex();
+        return renderLibrarySearchResults(arg.trim(), results, { reportCount: index.reportCount });
+      }
       case "/methodology":
         return methodologySummary();
       case "/doctor":
@@ -1337,6 +1357,9 @@ async function main() {
       break;
     case "resolutions-update":
       await resolutionsUpdate();
+      break;
+    case "library-search":
+      await librarySearchCommand();
       break;
     case "watchlist":
       await showWatchlist();
