@@ -12,6 +12,7 @@ import type {
   SourceRecord,
   SupplyReleaseAssessment,
 } from "./types.js";
+import { buildCatalysts } from "./research/catalysts.js";
 import { extractCandidateEvidence, summarizeEvidence } from "./research/evidence.js";
 import { buildSupplyChainGraph } from "./research/graph.js";
 import { buildKillCriteria } from "./research/kill-criteria.js";
@@ -659,6 +660,11 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     pe: stock.pe,
     entryDate: generatedAt,
   });
+  const catalysts = buildCatalysts({
+    matchedThemeLabels: matchedThemes.map((theme) => theme.label),
+    expectationGapScore: industryLogic.expectationGapScore,
+    entryDate: generatedAt,
+  });
 
   const ratingConstraint = computeRatingConstraint({
     hasCandidateP0,
@@ -674,6 +680,7 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     nextActions: evidenceSummary.nextActions,
     coverageGaps: [...new Set(coverageGaps)],
     killCriteria,
+    catalysts,
     confidenceCeiling: ratingConstraint.ceiling,
     ceilingReasons: ratingConstraint.reasons,
   };

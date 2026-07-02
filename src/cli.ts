@@ -33,6 +33,10 @@ import { createDeepSeekClient } from "./research/debate/llm-client.js";
 import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
 import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
 import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
+import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
+import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
+import { DEFAULT_THEMES } from "./methodology.js";
+import { evaluateCompleteness, renderCompleteness } from "./validation/completeness-gate.js";
 import { renderAnswerSafetyEvals, renderSycophancyEvals, runAnswerSafetyEvals, runSycophancyPromptEvals } from "./research/evals.js";
 import { archiveFfdSignal, FFD_SIGNAL_MODES, renderFfdSignalArchive, type FfdSignalMode } from "./research/ffd-signal.js";
 import { renderFfdSmoke, runFfdSmoke } from "./research/ffd-smoke.js";
@@ -469,7 +473,8 @@ async function runScreenPipeline(sendNotification = true) {
     matched = candidates;
   };
   const bearCases = completedBearCaseCodes(await loadBearCases());
-  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, onMatched: collectMatched });
+  const graveyardContext = await loadGraveyard();
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
   if (cninfo.warnings.length > 0) {
     for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
@@ -480,13 +485,16 @@ async function runScreenPipeline(sendNotification = true) {
   }
   const run =
     cninfo.sources.length > 0
-      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, onMatched: collectMatched })
+      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched })
       : preliminaryRun;
   const completed = await writeScreenReport(run);
   const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
   await saveWatchlist(watchlist);
   const graveyard = await updateGraveyard(completed, watchlist, matched);
   const graveyardSummary = summarizeGraveyard(graveyard);
+  const decisionLog = await loadDecisionLog();
+  const pendingDecisions = pendingEntriesFromRun(completed, decisionLog);
+  if (pendingDecisions.length > 0) await saveDecisionLog([...decisionLog, ...pendingDecisions]);
   const artifacts = await writeResearchArtifacts(completed, watchlist);
   await appendJsonl("runs/screen.jsonl", {
     type: "screen",
@@ -536,6 +544,8 @@ async function researchRefresh() {
   await writeJsonFile("runs/answer-safety-evals-latest.json", evals);
   const sycophancyEvals = runSycophancyPromptEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/sycophancy-evals-latest.json", sycophancyEvals);
+  const completeness = evaluateCompleteness(run);
+  await writeJsonFile("runs/completeness-latest.json", completeness);
   const doctorReport = await diagnoseRuntime();
   await writeJsonFile(`runs/doctor-${run.runId}.json`, doctorReport);
   await appendJsonl("runs/research-refresh.jsonl", {
@@ -557,6 +567,7 @@ async function researchRefresh() {
   console.log(renderCalibrationSnapshot(calibration));
   console.log(renderAnswerSafetyEvals(evals));
   console.log(renderSycophancyEvals(sycophancyEvals));
+  console.log(renderCompleteness(completeness));
   console.log(renderDoctorReport(doctorReport));
   if (!doctorReport.ok || evals.some((item) => !item.passed) || sycophancyEvals.some((item) => !item.passed)) process.exitCode = 1;
 }
@@ -657,8 +668,31 @@ async function calibration() {
   const snapshot = await buildCalibrationSnapshot();
   await writeCalibrationSnapshot(snapshot);
   console.log(renderCalibrationSnapshot(snapshot));
+  const resolutions = await loadResolutions();
+  const decisionLog = await loadDecisionLog();
+  const { entries, resolvedCount } = resolveDecisionEntries(decisionLog, resolutions);
+  if (resolvedCount > 0) await saveDecisionLog(entries);
+  const decisionSummary = summarizeDecisionLog(entries);
+  console.log(
+    `Decision log: total=${decisionSummary.total} pending=${decisionSummary.pending} resolved=${decisionSummary.resolved}` +
+      (decisionSummary.validatedRate != null ? ` validated-rate=${(decisionSummary.validatedRate * 100).toFixed(1)}%` : ""),
+  );
   const slice = await sycophancySliceReport();
   if (slice) console.log(`\n${slice}`);
+  const graveyardEntries = await loadGraveyard();
+  let arms: ThemeArmState[] = initialArms(DEFAULT_THEMES.map((theme) => theme.id));
+  const themeLabelToId = new Map(DEFAULT_THEMES.map((theme) => [theme.label, theme.id]));
+  for (const entry of graveyardEntries) {
+    if (entry.outcomeLabel !== "validated" && entry.outcomeLabel !== "falsified") continue;
+    for (const label of entry.matchedThemes) {
+      const themeId = themeLabelToId.get(label);
+      if (themeId) arms = updateArm(arms, themeId, entry.outcomeLabel === "validated" ? 1 : 0);
+    }
+  }
+  const rng = createRng(resolutions.length * 7919 + graveyardEntries.length + 1);
+  const suggested = pickNextTheme(arms, rng);
+  const suggestedLabel = DEFAULT_THEMES.find((theme) => theme.id === suggested)?.label ?? suggested;
+  console.log(`研究预算建议（Thompson 采样，防主题自选择）：下一轮优先复核主题「${suggestedLabel}」；冷门主题保有探索保底概率。`);
 }
 
 async function evals() {

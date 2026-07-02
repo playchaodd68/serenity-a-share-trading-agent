@@ -1,3 +1,4 @@
+import { evaluateValuationGate } from "../scoring/valuation-gate.js";
 import type {
   Candidate,
   QuantCandidateBucket,
@@ -356,11 +357,19 @@ export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustr
   ];
   const total = clamp(components.reduce((sum, item) => sum + item.score, 0), 0, 100);
   const excluded = excludedReasons(candidate);
-  const bucket = bucketFor(total, industry, gate, excluded);
+  const rawBucket = bucketFor(total, industry, gate, excluded);
+  const valuationGate = evaluateValuationGate({
+    pe: candidate.stock.pe,
+    expectationGapScore: candidate.trace.industryLogic?.expectationGapScore ?? 0,
+  });
+  // Valuation is a hard gate: the reachable bucket is capped deterministically and the
+  // cap cannot be overridden by narrative or chokepoint purity.
+  const bucket = rawBucket === "reject" ? rawBucket : bucketRank(rawBucket) >= bucketRank(valuationGate.maxBucket) ? rawBucket : valuationGate.maxBucket;
   const warnings = [
     ...(gate === "pass" ? [] : ["产业证据尚未达到核心组合准入，只能进入观察或候选队列。"]),
     ...(candidate.trace.coverageGaps.length > 0 ? [`覆盖缺口：${candidate.trace.coverageGaps.slice(0, 2).join("；")}`] : []),
     ...(candidate.trace.disqualifiers?.triggered ? [`一票否决信号：${candidate.trace.disqualifiers.hitSignals.join("；")}（置信度封顶 low）。`] : []),
+    ...(bucket !== rawBucket ? [`估值硬门：${valuationGate.light} 灯将分桶从 ${rawBucket} 封顶至 ${bucket}——${valuationGate.reasons.join("；")}`] : []),
     TWO_SIDED_CROWDING_NOTE,
   ];
 
@@ -376,6 +385,7 @@ export function scoreQuantCandidate(candidate: Candidate, industry: QuantIndustr
     warnings,
     excludedReasons: excluded,
     crowdingPolicy: "two-sided",
+    valuationGate,
   };
 }
 

@@ -4,6 +4,7 @@ import { ensureDir, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import fs from "node:fs/promises";
 import { summarizeSupplyChainGraph } from "./research/graph.js";
 import { renderHotThemeDowngrades } from "./research/theme-heat.js";
+import { evaluateCompleteness, renderCompleteness } from "./validation/completeness-gate.js";
 
 function evidenceMarkdown(candidate: Candidate): string {
   const evidence = candidate.trace.structuredEvidence ?? [];
@@ -149,6 +150,10 @@ export function renderScreenReport(run: ScreenRun): string {
 - Sources registered: ${run.sourceCount}
 
 > 本报告是研究候选清单，不构成投资建议或自动交易指令。高置信度需要 P0 主来源和独立交叉验证。
+
+## 研究完成度
+
+${renderCompleteness(evaluateCompleteness(run))}
 
 ## 热门降级（强制输出槽）
 

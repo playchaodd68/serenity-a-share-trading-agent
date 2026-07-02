@@ -2,8 +2,9 @@ import { fetchAShareSnapshot } from "./connectors/eastmoney.js";
 import { scoreCandidate } from "./methodology.js";
 import { applySerenityQuantOverlay } from "./quant/scoring.js";
 import { applyBearCaseGate } from "./research/debate/bear-case.js";
+import { annotateGraveyardRecall } from "./research/graveyard.js";
 import { computeHotThemeDowngrades } from "./research/theme-heat.js";
-import type { Candidate, ScreenRun, SourceRecord } from "./types.js";
+import type { Candidate, GraveyardEntry, ScreenRun, SourceRecord } from "./types.js";
 
 export interface ScreenOptions {
   maxRows: number;
@@ -12,6 +13,8 @@ export interface ScreenOptions {
   // Codes with a completed adversarial bear-case pass. High confidence is only
   // reachable for candidates in this set; callers omit it to enforce the gate on all.
   bearCases?: Set<string>;
+  // Buried theses recalled as adversarial context on similar candidates (N2).
+  graveyard?: GraveyardEntry[];
   // Receives every matched candidate (before the topN cut) so callers can record
   // passed-over theses; not persisted on the ScreenRun.
   onMatched?: (matched: Candidate[]) => void;
@@ -20,10 +23,11 @@ export interface ScreenOptions {
 export async function screenCandidates(sources: SourceRecord[], options: ScreenOptions): Promise<ScreenRun> {
   const stocks = options.stocks ?? (await fetchAShareSnapshot(options.maxRows));
   const bearCases = options.bearCases ?? new Set<string>();
-  const candidates: Candidate[] = stocks
+  const scored: Candidate[] = stocks
     .map((stock) => applyBearCaseGate(scoreCandidate(stock, sources), bearCases))
     .filter((candidate) => candidate.matchedThemes.length > 0)
     .sort((a, b) => b.score - a.score);
+  const candidates = annotateGraveyardRecall(scored, options.graveyard ?? []);
 
   const generatedAt = new Date().toISOString();
   const quant = applySerenityQuantOverlay(candidates, generatedAt);

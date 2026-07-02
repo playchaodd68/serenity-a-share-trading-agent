@@ -132,6 +132,7 @@ export interface MethodologyTrace {
   risks: string[];
   coverageGaps: string[];
   killCriteria?: KillCriterion[];
+  catalysts?: CatalystCriterion[];
   negativeSignals?: string[];
   supplyReleaseSignals?: string[];
   hypeRisk?: HypeRiskAssessment;
@@ -219,6 +220,21 @@ export interface KillCriterion {
   signal?: string;
 }
 
+// Positive mirror of KillCriterion (N3/N4): pre-registered, dated events that would
+// confirm the thesis. Resolution uses them to tell "fundamental-confirmed rise" from
+// "unconfirmed rise" (reflexivity/beta), which keeps the calibration slices clean.
+export type CatalystCategory = "earnings" | "capacity" | "certification" | "pricing";
+
+export interface CatalystCriterion {
+  id: string;
+  category: CatalystCategory;
+  trigger: string;
+  dueDate: string;
+  sourceCheck: string;
+  posteriorDelta: number;
+  confirms: string;
+}
+
 export interface Candidate {
   stock: AShareStock;
   matchedThemes: Array<{ themeId: string; label: string; keywords: string[] }>;
@@ -270,6 +286,13 @@ export interface QuantCandidateOverlay {
   warnings: string[];
   excludedReasons: string[];
   crowdingPolicy: "two-sided";
+  // Deterministic valuation hard gate: caps the reachable bucket; narrative strength
+  // and chokepoint purity cannot override it.
+  valuationGate?: {
+    light: "red" | "yellow" | "green" | "unknown";
+    maxBucket: "core" | "watchlist" | "observe";
+    reasons: string[];
+  };
 }
 
 export interface QuantScreenSummary {
@@ -321,6 +344,7 @@ export interface WatchlistEntry {
   nextActions: string[];
   events: WatchlistEvent[];
   killCriteria?: KillCriterion[];
+  catalysts?: CatalystCriterion[];
 }
 
 export interface CalibrationSnapshot {

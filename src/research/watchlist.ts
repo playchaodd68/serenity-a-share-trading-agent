@@ -74,6 +74,7 @@ function fromCandidate(candidate: Candidate, now: string): WatchlistEntry {
       event(now, "review-scheduled", `Next review scheduled for ${addDays(now, reviewCadenceDays(status)).slice(0, 10)}.`),
     ],
     killCriteria: candidate.trace.killCriteria ?? [],
+    catalysts: candidate.trace.catalysts ?? [],
   };
 }
 
@@ -100,8 +101,9 @@ function updateEntry(existing: WatchlistEntry, candidate: Candidate, now: string
     coverageGaps: candidate.trace.coverageGaps,
     nextActions: nextActions(candidate),
     events: trimEvents(events),
-    // Kill criteria are pinned to first entry so due dates do not reset each run.
+    // Kill criteria and catalysts are pinned to first entry so due dates do not reset each run.
     killCriteria: existing.killCriteria ?? candidate.trace.killCriteria ?? [],
+    catalysts: existing.catalysts ?? candidate.trace.catalysts ?? [],
   };
 }
 

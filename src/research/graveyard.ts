@@ -150,3 +150,55 @@ export async function loadGraveyard(filePath = GRAVEYARD_PATH): Promise<Graveyar
 export async function saveGraveyard(graveyard: GraveyardEntry[], filePath = GRAVEYARD_PATH): Promise<void> {
   await writeJsonFile(filePath, graveyard);
 }
+
+// --- Graveyard activation (N2) -------------------------------------------------------
+// The graveyard stops being write-only storage: before conclusions ship, similar buried
+// theses are recalled and injected as adversarial context (ported pattern: RD-Agent
+// CoSTEER failed-knowledge retrieval — recall similar failures before generating).
+
+export interface GraveyardRecall {
+  entry: GraveyardEntry;
+  match: "same-code" | "shared-theme";
+}
+
+export function recallSimilarBuried(candidate: Candidate, graveyard: GraveyardEntry[], limit = 3): GraveyardRecall[] {
+  const themeLabels = new Set(candidate.matchedThemes.map((theme) => theme.label));
+  const recalls: GraveyardRecall[] = [];
+  for (const entry of graveyard) {
+    if (entry.code === candidate.stock.code) {
+      recalls.push({ entry, match: "same-code" });
+      continue;
+    }
+    if (entry.matchedThemes.some((theme) => themeLabels.has(theme))) {
+      recalls.push({ entry, match: "shared-theme" });
+    }
+  }
+  recalls.sort((a, b) => {
+    if (a.match !== b.match) return a.match === "same-code" ? -1 : 1;
+    return b.entry.buriedAt.localeCompare(a.entry.buriedAt);
+  });
+  return recalls.slice(0, limit);
+}
+
+export function graveyardRecallNotes(recalls: GraveyardRecall[]): string[] {
+  return recalls.map((recall) => {
+    const outcome = recall.entry.outcomeLabel ? `，事后 ${recall.entry.outcomeLabel}${recall.entry.realizedAlpha != null ? `（alpha ${(recall.entry.realizedAlpha * 100).toFixed(1)}%）` : ""}` : "";
+    return recall.match === "same-code"
+      ? `墓地召回（同一标的）：${recall.entry.code} ${recall.entry.name} 曾于 ${recall.entry.buriedAt.slice(0, 10)} 因 ${recall.entry.reason} 入墓——${recall.entry.detail}${outcome}。核对当初死因是否已被新证据解除。`
+      : `墓地召回（相似论点）：${recall.entry.name}（${recall.entry.matchedThemes.join("/")}）曾因 ${recall.entry.reason} 入墓——${recall.entry.detail}${outcome}。检查本候选是否踩同一失效模式。`;
+  });
+}
+
+// Read-only annotation: appends recalled failures to trace.risks so every report and
+// bear pass sees them; never touches scores or confidence.
+export function annotateGraveyardRecall(candidates: Candidate[], graveyard: GraveyardEntry[]): Candidate[] {
+  if (graveyard.length === 0) return candidates;
+  return candidates.map((candidate) => {
+    const notes = graveyardRecallNotes(recallSimilarBuried(candidate, graveyard));
+    if (notes.length === 0) return candidate;
+    const existing = new Set(candidate.trace.risks);
+    const fresh = notes.filter((note) => !existing.has(note));
+    if (fresh.length === 0) return candidate;
+    return { ...candidate, trace: { ...candidate.trace, risks: [...candidate.trace.risks, ...fresh] } };
+  });
+}
