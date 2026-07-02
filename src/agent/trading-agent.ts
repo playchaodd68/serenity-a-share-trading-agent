@@ -4,7 +4,7 @@ import { getConfig } from "../config.js";
 import { callFfdTool, renderFfdToolResultWithStatus, type FfdAllowedToolName } from "../connectors/ffd.js";
 import { methodologySummary } from "../methodology.js";
 import { loadBearCases } from "../research/debate/bear-case.js";
-import { getLibrarySearchIndex, renderLibrarySearchResults, searchReportLibrary } from "../research/library-search.js";
+import { hybridSearchReportLibrary, renderHybridResults } from "../research/library-hybrid.js";
 import { loadGraveyard } from "../research/graveyard.js";
 import { screenCandidates } from "../screener.js";
 import { loadSourceRegistry } from "../sources/registry.js";
@@ -138,9 +138,8 @@ export function createTradingAgentTools(): AgentTool[] {
     }),
     async execute(_toolCallId, params) {
       const args = params as { query: string; topK?: number; company?: string; topic?: string };
-      const results = await searchReportLibrary(args.query, { topK: args.topK ?? 8, company: args.company, topic: args.topic });
-      const index = await getLibrarySearchIndex();
-      return textResult({ results }, renderLibrarySearchResults(args.query, results, { reportCount: index.reportCount }));
+      const output = await hybridSearchReportLibrary(args.query, { topK: args.topK ?? 8, company: args.company, topic: args.topic });
+      return textResult({ results: output.results, mode: output.mode }, renderHybridResults(args.query, output));
     },
   };
 
