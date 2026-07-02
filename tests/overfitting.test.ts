@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   assessBacktestOverfitting,
+  cscvPbo,
   deflatedSharpe,
   normalCdf,
   normalPpf,
   probabilisticSharpe,
   purgedKFoldIndices,
+  renderCscv,
 } from "../src/quant/overfitting.js";
 
 describe("normal helpers", () => {
@@ -83,5 +85,52 @@ describe("assessBacktestOverfitting", () => {
     const weak = [0.001, -0.002, 0.003, -0.001, 0.002, -0.0015, 0.0005, 0.001, -0.001, 0.0012];
     const guard = assessBacktestOverfitting(weak, 2000);
     expect(guard.passes).toBe(false);
+  });
+});
+
+describe("CSCV / PBO", () => {
+  it("validates the matrix and block count", () => {
+    const matrix = [
+      [1, 2, 3, 4, 5, 6, 7, 8],
+      [8, 7, 6, 5, 4, 3, 2, 1],
+    ];
+    expect(() => cscvPbo(matrix, { blocks: 3 })).toThrow(); // odd
+    expect(() => cscvPbo(matrix, { blocks: 10 })).toThrow(); // > periods
+    expect(() => cscvPbo([[1, 2, 3, 4]], { blocks: 2 })).toThrow(); // < 2 configs
+    expect(() => cscvPbo([[1, 2, 3, 4], [1, 2, 3]], { blocks: 2 })).toThrow(); // ragged
+  });
+
+  it("reports zero overfitting when one config dominates every period", () => {
+    const periods = 8;
+    const dominant = Array.from({ length: periods }, () => 3);
+    const weak = Array.from({ length: periods }, () => 1);
+    const weaker = Array.from({ length: periods }, () => 0.5);
+    const result = cscvPbo([dominant, weak, weaker], { blocks: 4 });
+    expect(result.nConfigs).toBe(3);
+    expect(result.nBlocks).toBe(4);
+    expect(result.nCombinations).toBe(6); // C(4,2)
+    expect(result.logits.length).toBe(6);
+    expect(result.pbo).toBe(0);
+  });
+
+  it("detects overfitting when the in-sample winner flips out-of-sample", () => {
+    const a = [2, 2, 2, 2, -2, -2, -2, -2];
+    const b = [-2, -2, -2, -2, 2, 2, 2, 2];
+    const result = cscvPbo([a, b], { blocks: 4 });
+    expect(result.pbo).toBeGreaterThan(0);
+    expect(renderCscv(result)).toContain("PBO");
+  });
+
+  it("keeps pbo and probabilityOfLoss within [0,1]", () => {
+    const matrix = [
+      [1, 2, 1, 2, 1, 2, 1, 2],
+      [2, 1, 2, 1, 2, 1, 2, 1],
+      [0, 0, 1, 1, 0, 0, 1, 1],
+    ];
+    const result = cscvPbo(matrix, { blocks: 4 });
+    expect(result.pbo).toBeGreaterThanOrEqual(0);
+    expect(result.pbo).toBeLessThanOrEqual(1);
+    expect(result.probabilityOfLoss).toBeGreaterThanOrEqual(0);
+    expect(result.probabilityOfLoss).toBeLessThanOrEqual(1);
   });
 });

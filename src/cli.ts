@@ -67,6 +67,7 @@ import {
   buryBelowBar,
   buryDowngraded,
   buryKilled,
+  combinedBaseRate,
   loadGraveyard,
   mergeGraveyard,
   renderGraveyardSummary,
@@ -74,7 +75,7 @@ import {
   summarizeGraveyard,
 } from "./research/graveyard.js";
 import { evidenceHasCandidateP0 } from "./research/evidence.js";
-import { loadResolutions, resolveCandidates, saveResolutions } from "./research/resolution.js";
+import { buildResolutionCalibration, loadResolutions, renderResolutionCalibration, resolveCandidates, saveResolutions } from "./research/resolution.js";
 import { buildResolutionInputsFromWatchlist, createFfdPriceReturnProvider } from "./research/resolution-provider.js";
 import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "./types.js";
 
@@ -713,6 +714,23 @@ async function calibration() {
   console.log(`研究预算建议（Thompson 采样，防主题自选择）：下一轮优先复核主题「${suggestedLabel}」；冷门主题保有探索保底概率。`);
 }
 
+async function resolutionsReport(): Promise<string> {
+  const resolutions = await loadResolutions();
+  return renderResolutionCalibration(buildResolutionCalibration(resolutions));
+}
+
+async function graveyardReport(): Promise<string> {
+  const resolutions = await loadResolutions();
+  const graveyard = attachGraveyardOutcomes(await loadGraveyard(), resolutions);
+  const summary = summarizeGraveyard(graveyard);
+  const combined = combinedBaseRate(resolutions, graveyard);
+  const survivorship =
+    combined.hitRate == null
+      ? "无已兑现结果，暂无法计算命中率（先跑 resolution 回填 forward alpha）。"
+      : `幸存者命中率 ${(combined.survivorsOnlyHitRate ?? 0).toFixed(2)} vs 全样本(含墓地) ${combined.hitRate.toFixed(2)}（n=${combined.n}）— 差值即幸存者偏差膨胀。`;
+  return `${renderGraveyardSummary(summary)}\n${survivorship}`;
+}
+
 async function evals() {
   const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
   await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -980,6 +998,10 @@ async function feishuServer() {
         const slice = await sycophancySliceReport();
         return slice ? [renderCalibrationSnapshot(snapshot), "", slice].join("\n") : renderCalibrationSnapshot(snapshot);
       }
+      case "/resolutions":
+        return resolutionsReport();
+      case "/graveyard":
+        return graveyardReport();
       case "/evals": {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -1152,6 +1174,12 @@ async function main() {
       break;
     case "calibration":
       await calibration();
+      break;
+    case "resolutions":
+      console.log(await resolutionsReport());
+      break;
+    case "graveyard":
+      console.log(await graveyardReport());
       break;
     case "evals":
       await evals();
