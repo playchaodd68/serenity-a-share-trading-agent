@@ -866,52 +866,136 @@ function splitLongBlock(block: string, maxChars: number): string[] {
   return parts;
 }
 
-function chunkSection(section: FfdReportSection, tags: string[], startIndex: number, maxChars = 2800): FfdReportChunk[] {
-  const blocks = normalizeWhitespace(section.text).split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
-  const chunks: FfdReportChunk[] = [];
-  let current = "";
-  for (const block of blocks) {
-    const blockParts = splitLongBlock(block, maxChars);
-    for (const part of blockParts) {
-      const next = current ? `${current}\n\n${part}` : part;
-      if (next.length > maxChars && current) {
-        const evidenceKinds = evidenceKindsForText(current);
-        chunks.push({
-          id: `chunk-${startIndex + chunks.length + 1}`,
-          order: startIndex + chunks.length + 1,
-          text: current,
-          tags: extractTags(current, section.title, ...tags),
-          sectionTitle: section.title,
-          sectionPath: section.path,
-          topics: [...new Set([...section.topics, ...inferTopicsFromText(current)])],
-          companies: [...new Set([...section.companies, ...inferCompanies(current)])],
-          evidenceKinds,
-          sourceTier: "P1",
-          requiresP0Verification: true,
-          tokenEstimate: estimateTokens(current),
-        });
-        current = part;
-      } else {
-        current = next;
-      }
+// --- P0-3 chunking rework ------------------------------------------------------------
+// Old behavior: 2800-char hard cuts, no overlap, no boilerplate stripping — produced
+// 32-token page-header crumbs that polluted retrieval. New behavior: token-bounded
+// (target 300-800) paragraph accumulation with ~15% overlap, markdown tables kept
+// intact, and legal/page boilerplate stripped before chunking.
+
+const CHUNK_MIN_TOKENS = 300;
+const CHUNK_MAX_TOKENS = 800;
+const CHUNK_OVERLAP_CHARS = 240;
+const CHUNK_MIN_KEEP_TOKENS = 30;
+
+const BOILERPLATE_BLOCK_PATTERNS = [
+  /免责声明/,
+  /法律声明/,
+  /分析师声明/,
+  /评级说明/,
+  /投资评级的?说明/,
+  /本报告仅供.{0,20}(参考|使用)/,
+  /特别声明/,
+];
+
+const BOILERPLATE_LINE_PATTERNS = [
+  /^证券研究报告(\s*[|｜].*)?$/,
+  /^敬请参阅最后一页/,
+  /^请务必阅读正文之后/,
+  /^扫码获取更多服务$/,
+  /^行业研究$/,
+  /^公司研究$/,
+  /^第?\s*\d+\s*页(共\s*\d+\s*页)?$/,
+  /^\d{1,4}$/,
+  /^.{0,80}[.…·]{5,}\s*\d+\s*$/,
+  /^[-—=\s]{4,}$/,
+];
+
+function isMarkdownTableBlock(block: string): boolean {
+  const lines = block.split(/\n/).filter((line) => line.trim().length > 0);
+  if (lines.length < 2) return false;
+  return lines.filter((line) => line.trim().startsWith("|")).length >= Math.ceil(lines.length * 0.6);
+}
+
+function isBoilerplateBlock(block: string): boolean {
+  const head = block.slice(0, 120);
+  return BOILERPLATE_BLOCK_PATTERNS.some((pattern) => pattern.test(head));
+}
+
+function stripBoilerplateLines(block: string): string {
+  return block
+    .split(/\n/)
+    .filter((line) => !BOILERPLATE_LINE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .join("\n")
+    .trim();
+}
+
+function overlapTail(text: string): string {
+  if (text.length <= CHUNK_OVERLAP_CHARS) return "";
+  const tail = text.slice(-CHUNK_OVERLAP_CHARS);
+  // Snap to a sentence boundary inside the tail so the overlap reads naturally.
+  const boundary = tail.search(/[。！？!?\n]/);
+  return boundary >= 0 && boundary < tail.length - 1 ? tail.slice(boundary + 1).trim() : tail.trim();
+}
+
+function buildChunk(
+  text: string,
+  section: FfdReportSection,
+  tags: string[],
+  order: number,
+): FfdReportChunk {
+  return {
+    id: `chunk-${order}`,
+    order,
+    text,
+    tags: extractTags(text, section.title, ...tags),
+    sectionTitle: section.title,
+    sectionPath: section.path,
+    topics: [...new Set([...section.topics, ...inferTopicsFromText(text)])],
+    companies: [...new Set([...section.companies, ...inferCompanies(text)])],
+    evidenceKinds: evidenceKindsForText(text),
+    sourceTier: "P1",
+    requiresP0Verification: true,
+    tokenEstimate: estimateTokens(text),
+  };
+}
+
+function chunkSection(section: FfdReportSection, tags: string[], startIndex: number): FfdReportChunk[] {
+  const maxChars = Math.floor(CHUNK_MAX_TOKENS * 3.2);
+  const rawBlocks = normalizeWhitespace(section.text).split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const blocks: string[] = [];
+  for (const raw of rawBlocks) {
+    if (isBoilerplateBlock(raw)) continue;
+    const cleaned = isMarkdownTableBlock(raw) ? raw : stripBoilerplateLines(raw);
+    if (!cleaned) continue;
+    if (isMarkdownTableBlock(cleaned) || cleaned.length <= maxChars) {
+      blocks.push(cleaned);
+    } else {
+      blocks.push(...splitLongBlock(cleaned, maxChars));
     }
   }
-  if (current) {
-    const evidenceKinds = evidenceKindsForText(current);
-    chunks.push({
-      id: `chunk-${startIndex + chunks.length + 1}`,
-      order: startIndex + chunks.length + 1,
-      text: current,
-      tags: extractTags(current, section.title, ...tags),
-      sectionTitle: section.title,
-      sectionPath: section.path,
-      topics: [...new Set([...section.topics, ...inferTopicsFromText(current)])],
-      companies: [...new Set([...section.companies, ...inferCompanies(current)])],
-      evidenceKinds,
-      sourceTier: "P1",
-      requiresP0Verification: true,
-      tokenEstimate: estimateTokens(current),
-    });
+
+  const chunks: FfdReportChunk[] = [];
+  let current = "";
+  const flush = () => {
+    const text = current.trim();
+    current = "";
+    if (!text) return;
+    chunks.push(buildChunk(text, section, tags, startIndex + chunks.length + 1));
+  };
+
+  for (const block of blocks) {
+    const candidate = current ? `${current}\n\n${block}` : block;
+    if (estimateTokens(candidate) > CHUNK_MAX_TOKENS && estimateTokens(current) >= CHUNK_MIN_TOKENS) {
+      const carry = overlapTail(current);
+      flush();
+      current = carry ? `${carry}\n\n${block}` : block;
+    } else {
+      current = candidate;
+    }
+  }
+  flush();
+
+  // Drop trailing crumbs (page-number leftovers) unless the section is genuinely tiny.
+  if (chunks.length > 1) {
+    return chunks.filter((chunk) => chunk.tokenEstimate >= CHUNK_MIN_KEEP_TOKENS);
+  }
+  // A heading-only section (chunk ≈ its own title) is a crumb, not content.
+  if (
+    chunks.length === 1 &&
+    chunks[0].tokenEstimate < CHUNK_MIN_KEEP_TOKENS &&
+    chunks[0].text.replace(/\s+/g, "").length <= section.title.replace(/\s+/g, "").length + 6
+  ) {
+    return [];
   }
   return chunks;
 }
@@ -1586,4 +1670,58 @@ export async function rejectFfdReport(reportId: string, options: { processedDir?
   };
   await saveManifest(updated);
   return updated;
+}
+
+// --- P0-3 rechunk: rebuild chunks/claims/evidence for already-converted reports -------
+// Re-runs the improved chunker over existing full.md without repeating PDF conversion,
+// so the whole library benefits from token-bounded chunks immediately. Obsidian notes
+// are not rewritten (their summary cards stay valid); retrieval reads chunks.json.
+
+export interface FfdRechunkRun {
+  scanned: number;
+  rebuilt: number;
+  skipped: number;
+  totalChunksBefore: number;
+  totalChunksAfter: number;
+  warnings: string[];
+}
+
+export async function rechunkFfdReports(processedDir = path.resolve(getConfig().ffdReportProcessedDir)): Promise<FfdRechunkRun> {
+  const manifests = await listFfdReportManifests(processedDir);
+  const run: FfdRechunkRun = { scanned: manifests.length, rebuilt: 0, skipped: 0, totalChunksBefore: 0, totalChunksAfter: 0, warnings: [] };
+  for (const manifest of manifests) {
+    let markdown: string;
+    try {
+      markdown = normalizeWhitespace(await fs.readFile(manifest.markdownPath, "utf8"));
+    } catch {
+      run.skipped += 1;
+      run.warnings.push(`${manifest.id}: full.md 缺失，跳过。`);
+      continue;
+    }
+    if (!markdown.trim()) {
+      run.skipped += 1;
+      continue;
+    }
+    const before = await readJsonFile<FfdReportChunk[]>(manifest.chunksPath, []);
+    run.totalChunksBefore += before.length;
+    const tags = manifest.tags ?? [];
+    const sections = extractReportSections(markdown, tags);
+    const chunks = chunkMarkdown(markdown, tags, sections);
+    const claims = extractClaims(chunks, tags);
+    const evidenceItems = extractEvidenceItems(claims, chunks);
+    await writeJsonFile(manifest.chunksPath, chunks);
+    await writeJsonFile(manifest.claimsPath, claims);
+    if (manifest.evidencePath) await writeJsonFile(manifest.evidencePath, evidenceItems);
+    run.totalChunksAfter += chunks.length;
+    run.rebuilt += 1;
+  }
+  return run;
+}
+
+export function renderFfdRechunkRun(run: FfdRechunkRun): string {
+  return [
+    `Rechunk: rebuilt ${run.rebuilt}/${run.scanned} reports (skipped ${run.skipped}).`,
+    `Chunks: ${run.totalChunksBefore} -> ${run.totalChunksAfter}.`,
+    ...(run.warnings.length > 0 ? [`Warnings:`, ...run.warnings.slice(0, 10).map((warning) => `- ${warning}`)] : []),
+  ].join("\n");
 }

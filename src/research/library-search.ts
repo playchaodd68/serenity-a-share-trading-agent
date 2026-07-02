@@ -189,11 +189,15 @@ export async function searchReportLibrary(query: string, filters: LibrarySearchF
   const maxPerReport = filters.maxChunksPerReport ?? DEFAULT_MAX_CHUNKS_PER_REPORT;
   const perReport = new Map<string, number>();
   const selected: LibrarySearchResult[] = [];
+  const normalizeTitle = (title: string) => title.replace(/[\s\d\-—【】\[\]()（）.]/g, "");
   for (const result of scoreBm25(index, query)) {
     if (!matchesFilters(result.document, filters)) continue;
-    const count = perReport.get(result.document.reportId) ?? 0;
+    // Duplicate downloads of the same report carry different IDs but near-identical
+    // titles; budget them as one report so one document cannot crowd the results.
+    const reportKey = normalizeTitle(result.document.title) || result.document.reportId;
+    const count = perReport.get(reportKey) ?? 0;
     if (count >= maxPerReport) continue;
-    perReport.set(result.document.reportId, count + 1);
+    perReport.set(reportKey, count + 1);
     selected.push(result);
     if (selected.length >= topK) break;
   }

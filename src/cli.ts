@@ -44,6 +44,7 @@ import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
 import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
 import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
 import { getLibrarySearchIndex, renderLibrarySearchResults, searchReportLibrary } from "./research/library-search.js";
+import { rechunkFfdReports, renderFfdRechunkRun } from "./research/report-library.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
 import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
 import { DEFAULT_THEMES } from "./methodology.js";
@@ -1360,6 +1361,9 @@ async function main() {
       break;
     case "library-search":
       await librarySearchCommand();
+      break;
+    case "reports-rechunk":
+      console.log(renderFfdRechunkRun(await rechunkFfdReports()));
       break;
     case "watchlist":
       await showWatchlist();

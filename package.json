@@ -16,6 +16,7 @@
     "portfolio:review": "tsx src/cli.ts portfolio-review",
     "resolutions:update": "tsx src/cli.ts resolutions-update",
     "library:search": "tsx src/cli.ts library-search",
+    "reports:rechunk": "tsx src/cli.ts reports-rechunk",
     "watchlist": "tsx src/cli.ts watchlist",
     "calibration": "tsx src/cli.ts calibration",
     "resolutions": "tsx src/cli.ts resolutions",
