@@ -141,28 +141,43 @@ async function writeResearchArtifacts(run: ScreenRun, watchlist: WatchlistEntry[
 }
 
 async function notifyFeishu(title: string, content: string): Promise<boolean> {
+  // Notification is best-effort: a delivery failure must never crash the research
+  // pipeline (artifacts are already written by the time this runs). Each channel is
+  // tried in priority order and failures fall through with a loud warning.
   const config = getConfig();
   if (config.feishuWebhookUrl) {
-    await sendFeishuMarkdown(config.feishuWebhookUrl, title, content);
-    return true;
+    try {
+      await sendFeishuMarkdown(config.feishuWebhookUrl, title, content);
+      return true;
+    } catch (error) {
+      console.warn(`Feishu webhook notify failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   if (config.feishuAppId && config.feishuAppSecret && config.feishuNotifyOpenId) {
-    await sendFeishuOpenIdText({
-      appId: config.feishuAppId,
-      appSecret: config.feishuAppSecret,
-      openId: config.feishuNotifyOpenId,
-      text: `${title}\n\n${content}`,
-    });
-    return true;
+    try {
+      await sendFeishuOpenIdText({
+        appId: config.feishuAppId,
+        appSecret: config.feishuAppSecret,
+        openId: config.feishuNotifyOpenId,
+        text: `${title}\n\n${content}`,
+      });
+      return true;
+    } catch (error) {
+      console.warn(`Feishu open-id notify failed (check FEISHU_NOTIFY_OPEN_ID belongs to FEISHU_APP_ID): ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   if (config.feishuAppId && config.feishuAppSecret && config.feishuNotifyChatId) {
-    await sendFeishuChatText({
-      appId: config.feishuAppId,
-      appSecret: config.feishuAppSecret,
-      chatId: config.feishuNotifyChatId,
-      text: `${title}\n\n${content}`,
-    });
-    return true;
+    try {
+      await sendFeishuChatText({
+        appId: config.feishuAppId,
+        appSecret: config.feishuAppSecret,
+        chatId: config.feishuNotifyChatId,
+        text: `${title}\n\n${content}`,
+      });
+      return true;
+    } catch (error) {
+      console.warn(`Feishu chat notify failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   return false;
 }
