@@ -257,7 +257,9 @@ export function completedBearCaseCodes(records: Record<string, BearCaseRecord>):
 }
 
 const BEAR_GATE_MISSING_REASON = "反方研究员 pass 未完成，禁止 high 置信度（运行 npm run research:bear -- <code>）。";
-const BEAR_GATE_REFUTED_REASON = "反方裁决 refuted：正方论点被反方证据实质推翻，置信度封顶 low。";
+// Exported so the graveyard's burial classifier can recognise a bear-refuted ceiling
+// as an active veto (读过并否决) instead of an evidence gap (没读过).
+export const BEAR_GATE_REFUTED_REASON = "反方裁决 refuted：正方论点被反方证据实质推翻，置信度封顶 low。";
 const BEAR_GATE_WEAKENED_REASON = "反方裁决 weakened：正方论点被削弱，置信度封顶 medium。";
 
 function capCandidate(candidate: Candidate, ceiling: "low" | "medium", reason: string): Candidate {

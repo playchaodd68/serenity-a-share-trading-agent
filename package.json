@@ -24,6 +24,7 @@
     "calibration": "tsx src/cli.ts calibration",
     "resolutions": "tsx src/cli.ts resolutions",
     "graveyard": "tsx src/cli.ts graveyard",
+    "evidence-queue": "tsx src/cli.ts evidence-queue",
     "ladder": "tsx src/cli.ts ladder",
     "evals": "tsx src/cli.ts evals",
     "quant:adapt-history": "tsx src/cli.ts quant-adapt-history",

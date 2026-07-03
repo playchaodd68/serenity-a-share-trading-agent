@@ -44,6 +44,10 @@ import { renderVerdict, synthesizeVerdict } from "./research/debate/verdict.js";
 import { createDeepSeekClient } from "./research/debate/llm-client.js";
 import { loadPortfolio, PORTFOLIO_PATH } from "./portfolio/portfolio.js";
 import { buildPositionOverlay, renderPositionOverlay } from "./pipeline/position-overlay.js";
+import { EVIDENCE_QUEUE_PATH, renderEvidenceQueueReport, type EvidenceQueue } from "./pipeline/evidence-queue.js";
+import { syncPortfolioIntoWatchlist, type PortfolioWatchlistSyncResult } from "./pipeline/portfolio-watchlist-sync.js";
+import { renderGraveyardResolutionResult, resolveGraveyardOutcomes } from "./research/graveyard-resolution.js";
+import { createResilientPriceReturnProvider } from "./research/eastmoney-price-provider.js";
 import { computeSycophancySlices, renderSycophancySlices } from "./research/sycophancy-slice.js";
 import { hybridSearchReportLibrary, renderHybridResults } from "./research/library-hybrid.js";
 import { buildEmbeddingIndex } from "./research/library-index.js";
@@ -85,6 +89,7 @@ import { renderFfdAutoDownloadGuide } from "./research/ffd-auto-download.js";
 import { loadWatchlist, renderWatchlistSummary, saveWatchlist, updateWatchlistFromRun } from "./research/watchlist.js";
 import { evaluateKillCriteria } from "./research/kill-criteria.js";
 import {
+  GRAVEYARD_PATH,
   attachGraveyardOutcomes,
   buryBelowBar,
   buryDowngraded,
@@ -559,7 +564,7 @@ async function runScreenPipeline(sendNotification = true) {
   };
   const bearCases = await loadBearCases();
   const graveyardContext = await loadGraveyard();
-  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched });
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched, evidenceQueuePath: EVIDENCE_QUEUE_PATH });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
   if (cninfo.warnings.length > 0) {
     for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
@@ -570,7 +575,7 @@ async function runScreenPipeline(sendNotification = true) {
   }
   const run =
     cninfo.sources.length > 0
-      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched })
+      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched, evidenceQueuePath: EVIDENCE_QUEUE_PATH })
       : preliminaryRun;
   const completed = await writeScreenReport(run);
   try {
@@ -578,8 +583,15 @@ async function runScreenPipeline(sendNotification = true) {
   } catch (error) {
     console.warn(`screen-run note write failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
+  const updatedWatchlist = updateWatchlistFromRun(completed, await loadWatchlist());
+  // 持仓强制跟踪（2026-07-03 持仓误判复盘）：daily-run 必须把实际持仓同步进 watchlist，
+  // "没读过"的持仓不能再游离于研究流水线之外。放在 updateWatchlistFromRun 之后，
+  // 避免 downgradeMissing/updateEntry 覆盖同步收紧的 nextReviewAt 与新建条目。
+  const { portfolio } = await loadPortfolio();
+  const portfolioSync = portfolio ? syncPortfolioIntoWatchlist(portfolio, updatedWatchlist, completed.generatedAt) : null;
+  const watchlist = portfolioSync ? portfolioSync.watchlist : updatedWatchlist;
   await saveWatchlist(watchlist);
+  if (portfolioSync?.changed) console.log(renderPortfolioSyncNote(portfolioSync));
   const graveyard = await updateGraveyard(completed, watchlist, matched);
   const graveyardSummary = summarizeGraveyard(graveyard);
   const decisionLog = await loadDecisionLog();
@@ -706,6 +718,12 @@ async function researchBear(codeArg?: string) {
   if (!result.ok) process.exitCode = 1;
 }
 
+function renderPortfolioSyncNote(sync: PortfolioWatchlistSyncResult): string {
+  const label = (items: Array<{ code: string; name: string }>) =>
+    items.length > 0 ? `${items.length} 条（${items.map((item) => `${item.code} ${item.name}`).join("、")}）` : "0 条";
+  return `持仓强制跟踪：watchlist 已同步实际持仓 — 新建 ${label(sync.added)}，复活 ${label(sync.reactivated)}。`;
+}
+
 async function portfolioReview(): Promise<string> {
   const { portfolio, errors } = await loadPortfolio();
   if (!portfolio) {
@@ -719,7 +737,15 @@ async function portfolioReview(): Promise<string> {
   ]);
   const report = buildPositionOverlay({ portfolio, latestRun, watchlist, bearCases, graveyard });
   await writeJsonFile("runs/position-overlay-latest.json", report);
-  return renderPositionOverlay(report);
+  // 持仓强制跟踪：/portfolio-review 是持仓文件更新后（手工编辑或飞书发起复核）的固定触点，
+  // 在此同步 watchlist，保证新持仓立即进入研究流水线。幂等，重复调用安全。
+  const sync = syncPortfolioIntoWatchlist(portfolio, watchlist, new Date().toISOString());
+  const lines = [renderPositionOverlay(report)];
+  if (sync.changed) {
+    await saveWatchlist(sync.watchlist);
+    lines.push("", renderPortfolioSyncNote(sync));
+  }
+  return lines.join("\n");
 }
 
 
@@ -729,21 +755,28 @@ async function resolutionsUpdate() {
   const inputs = buildResolutionInputsFromWatchlist(watchlist, now);
   if (inputs.length === 0) {
     console.log("No watchlist entries have completed their resolution horizon yet.");
-    return;
+  } else {
+    const existing = await loadResolutions();
+    // 墓地决议以 origin:"graveyard" 记账；watchlist 去重只看 watchlist 侧，避免同 code 同日的墓地条目吞掉 watchlist 决议。
+    const resolvedCodes = new Set(
+      existing.filter((item) => (item.origin ?? "watchlist") === "watchlist").map((item) => `${item.code}:${item.entryDate.slice(0, 10)}`),
+    );
+    const dueInputs = inputs.filter((input) => !resolvedCodes.has(`${input.code}:${input.entryDate.slice(0, 10)}`));
+    if (dueInputs.length === 0) {
+      console.log(`All ${inputs.length} due entries already resolved.`);
+    } else {
+      console.log(`Resolving ${dueInputs.length} due theses via FFD quote history...`);
+      const fresh = await resolveCandidates(dueInputs, createFfdPriceReturnProvider(), { now });
+      const merged = [...existing, ...fresh];
+      await saveResolutions(merged);
+      console.log(`Resolved ${fresh.length}/${dueInputs.length} (skipped entries stay unresolved; no fabricated data).`);
+      console.log(`Total resolutions on ledger: ${merged.length}. Run npm run calibration to refresh Brier/slices.`);
+    }
   }
-  const existing = await loadResolutions();
-  const resolvedCodes = new Set(existing.map((item) => `${item.code}:${item.entryDate.slice(0, 10)}`));
-  const dueInputs = inputs.filter((input) => !resolvedCodes.has(`${input.code}:${input.entryDate.slice(0, 10)}`));
-  if (dueInputs.length === 0) {
-    console.log(`All ${inputs.length} due entries already resolved.`);
-    return;
-  }
-  console.log(`Resolving ${dueInputs.length} due theses via FFD quote history...`);
-  const fresh = await resolveCandidates(dueInputs, createFfdPriceReturnProvider(), { now });
-  const merged = [...existing, ...fresh];
-  await saveResolutions(merged);
-  console.log(`Resolved ${fresh.length}/${dueInputs.length} (skipped entries stay unresolved; no fabricated data).`);
-  console.log(`Total resolutions on ledger: ${merged.length}. Run npm run calibration to refresh Brier/slices.`);
+  // 墓地兑现回路（2026-07-03 持仓误判复盘）：被拒标的到期后同样对账，喂 buriedHitRate（错杀率），
+  // origin:"graveyard" 隔离，不污染 watchlist 后验校准。FFD 优先，东财日K降级。
+  const graveyardResult = await resolveGraveyardOutcomes(GRAVEYARD_PATH, createResilientPriceReturnProvider(), now);
+  console.log(renderGraveyardResolutionResult(graveyardResult));
 }
 
 
@@ -881,6 +914,13 @@ async function graveyardReport(): Promise<string> {
       ? "无已兑现结果，暂无法计算命中率（先跑 resolution 回填 forward alpha）。"
       : `幸存者命中率 ${(combined.survivorsOnlyHitRate ?? 0).toFixed(2)} vs 全样本(含墓地) ${combined.hitRate.toFixed(2)}（n=${combined.n}）— 差值即幸存者偏差膨胀。`;
   return `${renderGraveyardSummary(summary)}\n${survivorship}`;
+}
+
+// 证据补齐队列（CLI `evidence-queue` 与飞书 `/queue` 共用）：evidence-gap 墓地条目的
+// 处置出口——先验命中但材料不足的标的排队补材料，而非渲染成红色否决。
+async function evidenceQueueReport(): Promise<string> {
+  const queue = await readJsonFile<EvidenceQueue | null>(EVIDENCE_QUEUE_PATH, null);
+  return renderEvidenceQueueReport(queue);
 }
 
 async function evals() {
@@ -1126,6 +1166,9 @@ async function feishuServer() {
         return resolutionsReport();
       case "/graveyard":
         return graveyardReport();
+      case "/queue":
+      case "/evidence-queue":
+        return evidenceQueueReport();
       case "/evals": {
         const results = runAnswerSafetyEvals(TRADING_AGENT_SYSTEM_PROMPT);
         await writeJsonFile("runs/answer-safety-evals-latest.json", results);
@@ -1407,6 +1450,8 @@ async function feishuServer() {
       },
       "/resolutions": () => resolutionsReport(),
       "/graveyard": () => graveyardReport(),
+      "/queue": () => evidenceQueueReport(),
+      "/evidence-queue": () => evidenceQueueReport(),
       "/bear": async (arg: string) => {
         if (!arg.trim()) return "Usage: /bear <code-or-name>";
         return (await runBearForCode(arg.trim())).text;
@@ -1514,6 +1559,9 @@ async function main() {
     case "graveyard":
       console.log(await graveyardReport());
       break;
+    case "evidence-queue":
+      console.log(await evidenceQueueReport());
+      break;
     case "ladder":
       console.log(await limitUpLadderCommand(process.argv[3] ?? ""));
       break;
@@ -1594,7 +1642,7 @@ async function main() {
       console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|panel-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|evidence-queue|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|panel-server|agent>");
       process.exitCode = 1;
   }
 }

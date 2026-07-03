@@ -1,5 +1,5 @@
 import { callFfdTool, classifyFfdToolText, renderFfdToolResult } from "../connectors/ffd.js";
-import type { WatchlistEntry } from "../types.js";
+import type { GraveyardEntry, WatchlistEntry } from "../types.js";
 import type { PriceReturnProvider, ResolveCandidateInput } from "./resolution.js";
 
 // Producer side of the fulfillment loop: turns due watchlist entries into resolution
@@ -33,7 +33,44 @@ export function buildResolutionInputsFromWatchlist(
     }));
 }
 
-interface ParsedBar {
+// Graveyard mirror of buildResolutionInputsFromWatchlist: entries buried >= horizonDays
+// ago and not yet labeled become resolution inputs, with origin "graveyard" so the
+// calibration ledger can keep them out of watchlist statistics. Semantics are inverted
+// relative to the watchlist: a buried entry is one the system REJECTED, so
+// outcomeLabel=validated (positive alpha beyond the deadband) means the rejection was
+// wrong — buriedHitRate is therefore an 错杀率 (miss rate of the rejection filter).
+// probability keeps resolution.ts's single definition (posterior/100 = P(跑赢基准)):
+// the burial-time score already encodes the system's low belief in the name, so no
+// sign flip is needed for Brier/log scores to stay consistent across both populations.
+export function buildResolutionInputsFromGraveyard(
+  entries: GraveyardEntry[],
+  now: string,
+  options: { horizonDays?: number } = {},
+): ResolveCandidateInput[] {
+  const horizonDays = options.horizonDays ?? DEFAULT_HORIZON_DAYS;
+  const nowMs = Date.parse(now);
+  return entries
+    .filter((entry) => {
+      if (entry.outcomeLabel != null) return false;
+      const buried = Date.parse(entry.buriedAt);
+      return Number.isFinite(buried) && nowMs - buried >= horizonDays * MS_PER_DAY;
+    })
+    .map((entry) => ({
+      code: entry.code,
+      name: entry.name,
+      origin: "graveyard" as const,
+      posterior: entry.score,
+      confidence: entry.confidence,
+      // GraveyardEntry carries no evidence-state snapshot; buried names were by
+      // definition not P0-anchored picks, and the tier is inert for graveyard-origin
+      // resolutions anyway (calibration filters them out).
+      evidenceAnchored: false,
+      entryDate: entry.buriedAt,
+      horizonDays,
+    }));
+}
+
+export interface ParsedBar {
   date: string;
   close: number;
 }

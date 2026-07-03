@@ -3,11 +3,13 @@ import {
   attachGraveyardOutcomes,
   buryBelowBar,
   combinedBaseRate,
+  isActiveRejectReason,
   mergeGraveyard,
   summarizeGraveyard,
 } from "../src/research/graveyard.js";
+import { BEAR_GATE_REFUTED_REASON } from "../src/research/debate/bear-case.js";
 import { scoreCandidate } from "../src/methodology.js";
-import type { AShareStock, CandidateResolution, GraveyardEntry } from "../src/types.js";
+import type { AShareStock, Candidate, CandidateResolution, GraveyardEntry } from "../src/types.js";
 
 const optical: AShareStock = {
   code: "000001",
@@ -42,6 +44,7 @@ function entry(partial: Partial<GraveyardEntry>): GraveyardEntry {
 
 function resolution(partial: Partial<CandidateResolution>): CandidateResolution {
   return {
+    ...(partial.origin ? { origin: partial.origin } : {}),
     code: partial.code ?? "000000",
     name: partial.name ?? "sample",
     posterior: partial.posterior ?? 60,
@@ -61,18 +64,52 @@ function resolution(partial: Partial<CandidateResolution>): CandidateResolution 
 }
 
 describe("graveyard", () => {
-  it("buries candidates that scored below the entry bar with their themes", () => {
+  it("buries low-confidence themed candidates below the bar as evidence-gap (unread, not refuted)", () => {
     const candidate = scoreCandidate(optical, []);
     const graveyard = buryBelowBar([candidate], 999, "2026-06-01T00:00:00.000Z");
     expect(graveyard).toHaveLength(1);
-    expect(graveyard[0].reason).toBe("below-entry-bar");
+    expect(graveyard[0].reason).toBe("evidence-gap");
     expect(graveyard[0].code).toBe("000001");
     expect(graveyard[0].matchedThemes.length).toBeGreaterThan(0);
+  });
+
+  it("buries medium-confidence candidates below the bar as below-entry-bar (read and passed over)", () => {
+    const candidate = { ...scoreCandidate(optical, []), confidence: "medium" as const };
+    const graveyard = buryBelowBar([candidate], 999, "2026-06-01T00:00:00.000Z");
+    expect(graveyard[0].reason).toBe("below-entry-bar");
   });
 
   it("does not bury candidates at or above the entry bar", () => {
     const candidate = scoreCandidate(optical, []);
     expect(buryBelowBar([candidate], 0, "2026-06-01T00:00:00.000Z")).toHaveLength(0);
+  });
+
+  it("buries a low-confidence disqualifier-vetoed candidate as below-entry-bar (read and refuted), never evidence-gap", () => {
+    const base = scoreCandidate(optical, []);
+    const candidate: Candidate = {
+      ...base,
+      confidence: "low",
+      trace: { ...base.trace, disqualifiers: { hitSignals: ["立案调查"], triggered: true } },
+    };
+    const graveyard = buryBelowBar([candidate], 999, "2026-06-01T00:00:00.000Z");
+    expect(graveyard).toHaveLength(1);
+    expect(graveyard[0].reason).toBe("below-entry-bar");
+    expect(graveyard[0].detail).toContain("立案调查");
+    expect(graveyard[0].detail).not.toContain("unread, not refuted");
+  });
+
+  it("buries a low-confidence bear-refuted candidate as below-entry-bar, never evidence-gap", () => {
+    const base = scoreCandidate(optical, []);
+    const candidate: Candidate = {
+      ...base,
+      confidence: "low",
+      trace: { ...base.trace, confidenceCeiling: "low", ceilingReasons: [BEAR_GATE_REFUTED_REASON] },
+    };
+    const graveyard = buryBelowBar([candidate], 999, "2026-06-01T00:00:00.000Z");
+    expect(graveyard).toHaveLength(1);
+    expect(graveyard[0].reason).toBe("below-entry-bar");
+    expect(graveyard[0].detail).toContain("refuted");
+    expect(graveyard[0].detail).not.toContain("unread, not refuted");
   });
 
   it("upserts by code, keeping the earliest burial and the newest reason", () => {
@@ -91,6 +128,35 @@ describe("graveyard", () => {
     const merged = mergeGraveyard([killed], [downgraded]);
     expect(merged[0].reason).toBe("downgraded");
     expect(merged[0].matchedThemes).toEqual(["AI 光互联 / CPO / 硅光"]);
+  });
+
+  it("never lets a neutral burial overwrite an active-reject reason", () => {
+    for (const activeReason of ["kill-triggered", "downgraded", "manual-reject"] as const) {
+      expect(isActiveRejectReason(activeReason)).toBe(true);
+      const rejected = entry({ code: "000001", reason: activeReason, detail: "读过并否决", buriedAt: "2026-05-01T00:00:00.000Z" });
+      const neutral = entry({
+        code: "000001",
+        reason: "evidence-gap",
+        detail: "unread, not refuted",
+        buriedAt: "2026-06-01T00:00:00.000Z",
+        outcomeLabel: "falsified",
+      });
+      const merged = mergeGraveyard([rejected], [neutral]);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].reason).toBe(activeReason);
+      expect(merged[0].detail).toBe("读过并否决");
+      // Non-verdict fields still merge normally.
+      expect(merged[0].outcomeLabel).toBe("falsified");
+      expect(merged[0].buriedAt).toBe("2026-05-01T00:00:00.000Z");
+    }
+  });
+
+  it("still lets an active reject overwrite a neutral burial", () => {
+    const neutral = entry({ code: "000001", reason: "evidence-gap", buriedAt: "2026-05-01T00:00:00.000Z" });
+    const rejected = entry({ code: "000001", reason: "manual-reject", detail: "人工否决", buriedAt: "2026-06-01T00:00:00.000Z" });
+    const merged = mergeGraveyard([neutral], [rejected]);
+    expect(merged[0].reason).toBe("manual-reject");
+    expect(merged[0].detail).toBe("人工否决");
   });
 
   it("backfills realized outcomes from resolutions by code", () => {
@@ -117,5 +183,21 @@ describe("graveyard", () => {
     // survivors [1,1] + buried [a=1, b=0] => [1,1,1,0] => 0.75
     expect(combined.hitRate).toBeCloseTo(0.75, 10);
     expect(combined.n).toBe(4);
+  });
+
+  it("keeps graveyard-origin resolutions out of the survivor side and never double-counts them", () => {
+    // A resolved rejection lives on the ledger with origin:"graveyard" AND has been
+    // written back onto its graveyard entry as outcomeLabel.
+    const graveyard = [entry({ code: "g1", outcomeLabel: "falsified" })];
+    const ledger: CandidateResolution[] = [
+      resolution({ code: "g1", origin: "graveyard", outcomeLabel: "falsified", outcome: 0 }),
+      resolution({ code: "s1", outcomeLabel: "validated" }),
+    ];
+    const combined = combinedBaseRate(ledger, graveyard);
+    // Survivor hit rate covers watchlist theses only — the rejected g1 must not pollute it.
+    expect(combined.survivorsOnlyHitRate).toBeCloseTo(1, 10);
+    // g1 counts exactly once (via the graveyard), not twice: [s1=1, g1=0] => n=2, 0.5.
+    expect(combined.n).toBe(2);
+    expect(combined.hitRate).toBeCloseTo(0.5, 10);
   });
 });

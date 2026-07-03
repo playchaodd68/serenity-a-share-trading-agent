@@ -32,6 +32,8 @@ export type PriceReturnProvider = (input: {
 export interface ResolveCandidateInput {
   code: string;
   name: string;
+  /** 决议来源；缺省视为 watchlist(与历史 ledger 数据一致)。 */
+  origin?: CandidateResolution["origin"];
   posterior: number;
   confidence: Candidate["confidence"];
   evidenceAnchored: boolean;
@@ -81,6 +83,7 @@ export async function resolveCandidate(
   return {
     code: input.code,
     name: input.name,
+    ...(input.origin ? { origin: input.origin } : {}),
     posterior: input.posterior,
     probability,
     confidence: input.confidence,
@@ -125,9 +128,14 @@ function tierStat<T extends string>(tier: T, group: CandidateResolution[]): Reso
 }
 
 export function buildResolutionCalibration(
-  resolutions: CandidateResolution[],
+  allResolutions: CandidateResolution[],
   now = new Date().toISOString(),
 ): ResolutionCalibration {
+  // Calibration isolation: graveyard-origin resolutions verify rejections (错杀率, fed
+  // into summarizeGraveyard().buriedHitRate), not the posterior ledger. Their burial-time
+  // scores cluster at low probabilities and would drag the reliability bins / Brier mean
+  // of watchlist theses, so the calibration report counts watchlist resolutions only.
+  const resolutions = allResolutions.filter((item) => item.origin !== "graveyard");
   const resolved = resolutions.length;
   if (resolved === 0) {
     return {

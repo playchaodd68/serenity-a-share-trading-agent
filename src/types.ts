@@ -374,6 +374,8 @@ export interface CalibrationSnapshot {
 export interface CandidateResolution {
   code: string;
   name: string;
+  /** 决议来源:watchlist(默认,历史数据无此字段) 或 graveyard(墓地事后验证回路)。 */
+  origin?: "watchlist" | "graveyard";
   posterior: number;
   probability: number;
   confidence: Candidate["confidence"];
@@ -417,7 +419,9 @@ export interface ResolutionCalibration {
   byEvidenceTier: Array<ResolutionTierStat<CandidateResolution["evidenceTier"]>>;
 }
 
-export type GraveyardReason = "below-entry-bar" | "kill-triggered" | "downgraded" | "manual-reject";
+// "evidence-gap": 先验画像达标但证据覆盖不足(低置信度)——是"没读过"而非"读过并否决",
+// 与 below-entry-bar(证据充分但未达线)分开记账,避免无知被当成否决(2026-07-03 持仓误判复盘)。
+export type GraveyardReason = "below-entry-bar" | "evidence-gap" | "kill-triggered" | "downgraded" | "manual-reject";
 
 export interface GraveyardEntry {
   code: string;

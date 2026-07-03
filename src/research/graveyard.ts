@@ -1,6 +1,7 @@
 import path from "node:path";
-import type { Candidate, CandidateResolution, GraveyardEntry, GraveyardSummary, KillCriterion, WatchlistEntry } from "../types.js";
+import type { Candidate, CandidateResolution, GraveyardEntry, GraveyardReason, GraveyardSummary, KillCriterion, WatchlistEntry } from "../types.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
+import { BEAR_GATE_REFUTED_REASON } from "./debate/bear-case.js";
 
 export const GRAVEYARD_PATH = path.resolve("data/graveyard.json");
 
@@ -12,20 +13,61 @@ function themesOf(candidate: Candidate): string[] {
   return candidate.matchedThemes.map((theme) => theme.label);
 }
 
+// Disposal-layer split for passed-over theses (2026-07-03 持仓误判复盘). A low-confidence
+// candidate whose prior hit configured themes was buried because evidence coverage never
+// arrived — "没读过", not "读过并否决". Scoring it below-entry-bar lets the panel render
+// ignorance as a red-flag veto, which inverts methodology.ts 蒸馏规则 3（机构覆盖少是
+// 先验加分项，补不齐 P0/P1 只降置信度）: scarce coverage must queue evidence backfill,
+// never masquerade as a refutation. Anything with medium/high confidence had enough
+// material to be judged, so passing it over stays a genuine below-entry-bar decision;
+// low confidence without a theme hit never had a prior thesis to defend either way.
+// But "low confidence" is not always "unread": the disqualifier hard veto (立案调查/
+// 财务造假等, methodology.ts) and a bear-pass refuted verdict (applyBearCaseGate) both
+// cap confidence at low after the thesis WAS read and rejected. Those must never be
+// laundered into evidence-gap (and its backfill queue) — the classifier reads the
+// deterministic veto fields already on the trace, no inference.
+export function activeVetoReasons(candidate: Candidate): string[] {
+  const reasons: string[] = [];
+  const disqualifiers = candidate.trace.disqualifiers;
+  if (disqualifiers?.triggered) reasons.push(`一票否决: ${disqualifiers.hitSignals.join(" / ")}`);
+  if ((candidate.trace.ceilingReasons ?? []).includes(BEAR_GATE_REFUTED_REASON)) reasons.push(BEAR_GATE_REFUTED_REASON);
+  return reasons;
+}
+
+export function classifyBurialReason(
+  confidence: Candidate["confidence"],
+  matchedThemes: readonly string[],
+  activelyVetoed = false,
+): Extract<GraveyardReason, "below-entry-bar" | "evidence-gap"> {
+  if (activelyVetoed) return "below-entry-bar";
+  return confidence === "low" && matchedThemes.length > 0 ? "evidence-gap" : "below-entry-bar";
+}
+
 export function buryBelowBar(candidates: Candidate[], entryBar: number, now: string): GraveyardEntry[] {
   return candidates
     .filter((candidate) => candidate.score < entryBar)
-    .map((candidate) => ({
-      code: candidate.stock.code,
-      name: candidate.stock.name,
-      reason: "below-entry-bar" as const,
-      score: candidate.score,
-      confidence: candidate.confidence,
-      matchedThemes: themesOf(candidate),
-      killedCriterionIds: [],
-      detail: `Passed over below entry bar ${entryBar} at score ${candidate.score.toFixed(1)}.`,
-      buriedAt: now,
-    }));
+    .map((candidate) => {
+      const themes = themesOf(candidate);
+      const vetoes = activeVetoReasons(candidate);
+      const reason = classifyBurialReason(candidate.confidence, themes, vetoes.length > 0);
+      const detail =
+        vetoes.length > 0
+          ? `Passed over below entry bar ${entryBar} at score ${candidate.score.toFixed(1)} after active veto: ${vetoes.join("；")}`.slice(0, 400)
+          : reason === "evidence-gap"
+            ? `Evidence gap below entry bar ${entryBar} at score ${candidate.score.toFixed(1)}: prior hit ${themes.join("/")} but coverage stayed low-confidence (unread, not refuted).`
+            : `Passed over below entry bar ${entryBar} at score ${candidate.score.toFixed(1)}.`;
+      return {
+        code: candidate.stock.code,
+        name: candidate.stock.name,
+        reason,
+        score: candidate.score,
+        confidence: candidate.confidence,
+        matchedThemes: themes,
+        killedCriterionIds: [],
+        detail,
+        buriedAt: now,
+      };
+    });
 }
 
 export function buryKilled(candidate: Candidate, fired: KillCriterion[], now: string): GraveyardEntry {
@@ -56,6 +98,14 @@ export function buryDowngraded(entry: WatchlistEntry, now: string): GraveyardEnt
   };
 }
 
+// Reason tiers mirror the panel's rendering split (panel graveyardTiers.ts): active
+// rejects (读过并否决) render red, neutral archives (evidence-gap/below-entry-bar) grey.
+const ACTIVE_REJECT_REASONS: ReadonlySet<GraveyardReason> = new Set(["kill-triggered", "downgraded", "manual-reject"]);
+
+export function isActiveRejectReason(reason: GraveyardReason): boolean {
+  return ACTIVE_REJECT_REASONS.has(reason);
+}
+
 export function mergeGraveyard(existing: GraveyardEntry[], additions: GraveyardEntry[]): GraveyardEntry[] {
   const byCode = new Map(existing.map((entry) => [entry.code, entry]));
   for (const addition of additions) {
@@ -64,9 +114,14 @@ export function mergeGraveyard(existing: GraveyardEntry[], additions: GraveyardE
       byCode.set(addition.code, addition);
       continue;
     }
+    // Reason priority: a neutral burial (a later screen passing the code over) must not
+    // silently downgrade a recorded active reject into a grey archive row — red must
+    // stay reserved for "读过并否决". Non-verdict fields still merge below.
+    const keepVerdict = isActiveRejectReason(current.reason) && !isActiveRejectReason(addition.reason);
     byCode.set(addition.code, {
       ...current,
       ...addition,
+      ...(keepVerdict ? { reason: current.reason, detail: current.detail } : {}),
       buriedAt: current.buriedAt < addition.buriedAt ? current.buriedAt : addition.buriedAt,
       // Preserve theme attribution: buryDowngraded has no theme data (WatchlistEntry
       // carries none) and would otherwise overwrite a killed/below-bar entry's themes.
@@ -125,7 +180,14 @@ export function combinedBaseRate(resolutions: CandidateResolution[], graveyard: 
   // Same measurement basis for both populations: deadband outcome labels with
   // inconclusive excluded — mixing sign-based outcomes (survivors) with label-based
   // outcomes (buried) would skew the combined base rate.
-  const survivorOutcomes = decidedOutcomes(resolutions.map((resolution) => resolution.outcomeLabel));
+  // Origin isolation: graveyard-origin ledger rows verify rejections and are already
+  // written back onto graveyard entries as outcomeLabel. Counting them here would both
+  // pollute survivorsOnlyHitRate with rejected theses and double-count the same burial
+  // outcome in the combined rate — exactly the survivorship-bias gap this report exists
+  // to expose.
+  const survivorOutcomes = decidedOutcomes(
+    resolutions.filter((resolution) => resolution.origin !== "graveyard").map((resolution) => resolution.outcomeLabel),
+  );
   const buriedOutcomes = decidedOutcomes(graveyard.map((entry) => entry.outcomeLabel));
   const all = [...survivorOutcomes, ...buriedOutcomes];
   const rate = (values: number[]): number | null => (values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length);
