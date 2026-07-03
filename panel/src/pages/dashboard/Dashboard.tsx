@@ -9,6 +9,7 @@ import { fmtRelative } from "@/lib/format";
 import { useOverview } from "@/lib/useSharedQueries";
 import { CalibrationMiniCard } from "@/pages/dashboard/CalibrationMiniCard";
 import { ChurnCard } from "@/pages/dashboard/ChurnCard";
+import { EvidenceQueueCard } from "@/pages/dashboard/EvidenceQueueCard";
 import { LadderMiniCard } from "@/pages/dashboard/LadderMiniCard";
 import { LatestReportCard } from "@/pages/dashboard/LatestReportCard";
 import { PipelinePulse } from "@/pages/dashboard/PipelinePulse";
@@ -89,6 +90,7 @@ export default function Dashboard() {
           </div>
           <aside className="min-w-0 space-y-6">
             <LadderMiniCard ladder={data.ladder} />
+            <EvidenceQueueCard />
             <CalibrationMiniCard />
           </aside>
         </div>

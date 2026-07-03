@@ -235,6 +235,8 @@ export interface CalibrationSnapshot {
 export interface CandidateResolution {
   code: string;
   name: string;
+  /** 决议来源：watchlist（默认，历史数据无此字段）或 graveyard（墓地事后验证回路）。 */
+  origin?: "watchlist" | "graveyard";
   posterior: number;
   probability: number;
   confidence: ConfidenceLevel;
@@ -280,7 +282,9 @@ export interface ResolutionCalibration {
 
 // ===== 墓地（src/types.ts） =====
 
-export type GraveyardReason = "below-entry-bar" | "kill-triggered" | "downgraded" | "manual-reject";
+// "evidence-gap"：先验画像达标但证据覆盖不足（低置信度）——是"没读过"而非"读过并否决"，
+// 与 below-entry-bar（证据充分但未达线）分开记账（2026-07-03 持仓误判复盘）。
+export type GraveyardReason = "below-entry-bar" | "evidence-gap" | "kill-triggered" | "downgraded" | "manual-reject";
 
 export interface GraveyardEntry {
   code: string;
@@ -607,10 +611,29 @@ export interface PortfolioPositionView {
   note?: string;
   watchlist?: Pick<WatchlistEntry, "status" | "score" | "confidence" | "nextReviewAt">;
   latestScreenScore?: number;
-  graveyard?: Pick<GraveyardEntry, "reason" | "buriedAt" | "detail">;
+  /** score/confidence 供墓地语义分级（evidence-gap=没读过 ≠ 主动否决）。 */
+  graveyard?: Pick<GraveyardEntry, "reason" | "score" | "confidence" | "buriedAt" | "detail">;
 }
 
 export interface PortfolioResponse {
   updatedAt: string;
   positions: PortfolioPositionView[];
+}
+
+// ===== 证据补齐队列（runs/evidence-queue.json；/api/evidence-queue 只读透传，缺失为 null） =====
+
+export interface EvidenceQueueEntry {
+  code: string;
+  name: string;
+  score: number;
+  confidence: ConfidenceLevel;
+  matchedThemes: string[];
+  reasons: string[];
+  nextActions: string[];
+  queuedAt: string;
+}
+
+export interface EvidenceQueue {
+  updatedAt: string;
+  entries: EvidenceQueueEntry[];
 }

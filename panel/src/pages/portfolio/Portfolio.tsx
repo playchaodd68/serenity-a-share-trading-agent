@@ -10,6 +10,7 @@ import { SectionTitle } from "@/components/ui/SectionTitle";
 import { StatDisplay } from "@/components/ui/StatDisplay";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
 import { usePortfolio } from "@/lib/useSharedQueries";
+import { isActiveReject } from "@/pages/portfolio/graveyardTiers";
 import { PositionTable } from "@/pages/portfolio/PositionTable";
 
 /** updatedAt 超过 7 天视为陈旧（新鲜度徽标转 warning）。 */
@@ -32,11 +33,14 @@ export default function Portfolio() {
 
   const summary = useMemo(() => {
     const positions = portfolio?.positions ?? [];
+    const buried = positions.filter((p) => p.graveyard != null);
     return {
       total: positions.length,
       watched: positions.filter((p) => p.watchlist != null).length,
       screened: positions.filter((p) => p.latestScreenScore != null).length,
-      buried: positions.filter((p) => p.graveyard != null).length,
+      // 语义分级：红色数字只统计主动否决类；证据不足/未达线是中性档案，单独灰色计数。
+      rejected: buried.filter((p) => isActiveReject(p.graveyard!.reason)).length,
+      neutralBuried: buried.filter((p) => !isActiveReject(p.graveyard!.reason)).length,
     };
   }, [portfolio]);
 
@@ -112,9 +116,18 @@ export default function Portfolio() {
               />
               <StatDisplay
                 label="曾被埋葬"
-                value={String(summary.buried)}
-                tone={summary.buried > 0 ? "danger" : "muted"}
-                sub={summary.buried > 0 ? "存在方法论否决记录，见下表红字" : "无墓地记录"}
+                value={String(summary.rejected)}
+                tone={summary.rejected > 0 ? "danger" : "muted"}
+                sub={
+                  <>
+                    {summary.rejected > 0 ? "主动否决记录（kill/降权/人工），见下表红字" : "无主动否决记录"}
+                    {summary.neutralBuried > 0 && (
+                      <span className="block text-ink-3">
+                        另有 <span className="num">{summary.neutralBuried}</span> 项证据不足/未达线（中性，非否决）
+                      </span>
+                    )}
+                  </>
+                }
                 className="sm:pl-4"
               />
             </div>

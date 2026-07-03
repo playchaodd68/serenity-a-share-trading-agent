@@ -8,6 +8,7 @@ import { toast } from "@/components/ui/Toast";
 import type {
   CalibrationSnapshot,
   DecisionLogResponse,
+  EvidenceQueue,
   FfdReportManifest,
   FfdReportStatus,
   GraveyardReason,
@@ -141,6 +142,9 @@ export const api = {
   // 15. FFD 研报清单
   ffdReports: (status?: FfdReportStatus) =>
     request<FfdReportManifest[]>(`/api/reports/ffd${qs({ status })}`),
+
+  // 16. 证据补齐队列（runs/evidence-queue.json 缺失时为 null）
+  evidenceQueue: () => request<EvidenceQueue | null>("/api/evidence-queue"),
 
   // 既有 chat-server 端点（S6 Chat 抽屉使用）
   chat: (payload: { sessionId?: string; message: string }) =>

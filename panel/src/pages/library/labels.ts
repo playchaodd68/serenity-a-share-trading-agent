@@ -21,20 +21,24 @@ export const confidenceLabels: Record<ConfidenceLevel, string> = {
   high: "高",
 };
 
-// ===== 墓地 reason（四类） =====
+// ===== 墓地 reason（五类，语义分级） =====
+// 中性类（evidence-gap=没读过 / below-entry-bar=读过但未达线）→ 灰/中性；
+// 主动否决类（kill-triggered/downgraded/manual-reject）→ 一律红色警告（2026-07-03 复盘）。
 
 export const GRAVEYARD_REASONS: readonly GraveyardReason[] = [
   "below-entry-bar",
+  "evidence-gap",
   "kill-triggered",
   "downgraded",
   "manual-reject",
 ] as const;
 
 export const graveyardReasonMeta: Record<GraveyardReason, { label: string; variant: BadgeVariant }> = {
-  "below-entry-bar": { label: "未达门槛", variant: "muted" },
+  "below-entry-bar": { label: "未达入场线", variant: "muted" },
+  "evidence-gap": { label: "证据覆盖不足", variant: "muted" },
   "kill-triggered": { label: "触发否决", variant: "danger" },
-  downgraded: { label: "已降权", variant: "warning" },
-  "manual-reject": { label: "人工否决", variant: "outline" },
+  downgraded: { label: "已降权", variant: "danger" },
+  "manual-reject": { label: "人工否决", variant: "danger" },
 };
 
 // ===== 决议 outcome =====

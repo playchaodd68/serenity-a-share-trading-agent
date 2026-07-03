@@ -1,5 +1,6 @@
 // 墓地：GraveyardSummary（byReason 分布条形 + buriedHitRate display 数字）+
-// reason 四类过滤（URL ?reason=）+ 分页条目表（/api/graveyard 服务端分页，加载更多）。
+// reason 五类过滤（URL ?reason=）+ 分页条目表（/api/graveyard 服务端分页，加载更多）。
+// 行内 tone 按语义分级（labels.ts）：中性类灰、主动否决类红——无知不渲染成否决。
 // buriedHitRate 是"被埋葬者事后验证率"——方法论的诚实度指标，给足视觉权重（蓝图 §2.3-4）。
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Skull } from "lucide-react";
@@ -183,7 +184,7 @@ export function GraveyardTab() {
       <EmptyState
         icon={Skull}
         title="墓地为空"
-        hint="候选被淘汰（未达门槛 / 触发否决 / 降权 / 人工否决）时会记录到 data/graveyard.json——淘汰决策同样要接受事后检验。"
+        hint="候选被淘汰（未达入场线 / 证据覆盖不足 / 触发否决 / 降权 / 人工否决）时会记录到 data/graveyard.json——淘汰决策同样要接受事后检验。"
       />
     );
   }

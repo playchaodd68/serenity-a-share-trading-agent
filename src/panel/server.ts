@@ -66,7 +66,7 @@ const DEFAULT_LADDER_HISTORY_DAYS = 20;
 const MAX_LADDER_HISTORY_DAYS = 120;
 
 const WATCHLIST_STATUSES: WatchlistStatus[] = ["evidence-needed", "investigating", "validated", "downgraded", "archived"];
-const GRAVEYARD_REASONS: GraveyardReason[] = ["below-entry-bar", "kill-triggered", "downgraded", "manual-reject"];
+const GRAVEYARD_REASONS: GraveyardReason[] = ["below-entry-bar", "evidence-gap", "kill-triggered", "downgraded", "manual-reject"];
 const FFD_REPORT_STATUSES: FfdReportStatus[] = ["downloaded", "staged", "accepted", "rejected", "archived"];
 const DECISION_STATUSES = ["pending", "resolved"] as const;
 
@@ -148,6 +148,24 @@ interface ScreenRunMeta {
   sourceCount: number;
 }
 
+// runs/evidence-queue.json 工件（证据补齐队列任务写入，score 降序、上限 50 条）。
+// 面板只读透传：缺失返回 null，不做二次排序或校验。
+interface EvidenceQueueEntry {
+  code: string;
+  name: string;
+  score: number;
+  confidence: GraveyardEntry["confidence"];
+  matchedThemes: string[];
+  reasons: string[];
+  nextActions: string[];
+  queuedAt: string;
+}
+
+interface EvidenceQueueArtifact {
+  updatedAt: string;
+  entries: EvidenceQueueEntry[];
+}
+
 interface PanelPaths {
   rootDir: string;
   reportsDir: string;
@@ -158,6 +176,7 @@ interface PanelPaths {
   calibrationPath: string;
   resolutionsPath: string;
   backtestPath: string;
+  evidenceQueuePath: string;
   ladderDir: string;
   ffdProcessedDir: string;
   packageJsonPath: string;
@@ -174,6 +193,7 @@ function panelPaths(rootDir: string): PanelPaths {
     calibrationPath: path.join(rootDir, "runs", "calibration-latest.json"),
     resolutionsPath: path.join(rootDir, "runs", "resolutions.json"),
     backtestPath: path.join(rootDir, "runs", "quant-backtest-latest.json"),
+    evidenceQueuePath: path.join(rootDir, "runs", "evidence-queue.json"),
     ladderDir: path.join(rootDir, "runs", "ladder"),
     ffdProcessedDir: path.join(rootDir, "reports", "ffd", "processed"),
     packageJsonPath: path.join(rootDir, "package.json"),
@@ -332,7 +352,10 @@ async function buildPortfolioView(paths: PanelPaths) {
           ? { status: watched.status, score: watched.score, confidence: watched.confidence, nextReviewAt: watched.nextReviewAt }
           : undefined,
         latestScreenScore: latestScoreByCode.get(position.code),
-        graveyard: buried ? { reason: buried.reason, buriedAt: buried.buriedAt, detail: buried.detail } : undefined,
+        // score/confidence 供面板做墓地语义分级（evidence-gap=没读过 ≠ 主动否决）。
+        graveyard: buried
+          ? { reason: buried.reason, score: buried.score, confidence: buried.confidence, buriedAt: buried.buriedAt, detail: buried.detail }
+          : undefined,
       };
     }),
   };
@@ -586,6 +609,11 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
 
     if (pathname === "/api/portfolio") {
       sendJson(response, 200, await buildPortfolioView(paths));
+      return true;
+    }
+
+    if (pathname === "/api/evidence-queue") {
+      sendJson(response, 200, await readJsonFile<EvidenceQueueArtifact | null>(paths.evidenceQueuePath, null));
       return true;
     }
 

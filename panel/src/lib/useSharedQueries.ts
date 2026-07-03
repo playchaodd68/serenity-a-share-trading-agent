@@ -84,6 +84,11 @@ export function useFfdReports(status?: FfdReportStatus) {
   });
 }
 
+/** 证据补齐队列 — Dashboard 右栏 EvidenceQueueCard（缺失工件时为 null）。 */
+export function useEvidenceQueue() {
+  return useQuery({ queryKey: QK.evidenceQueue, queryFn: api.evidenceQueue, staleTime: ARTIFACT_STALE_MS });
+}
+
 /** 过程校准快照 — 校准页 / Dashboard 共用。 */
 export function useCalibration() {
   return useQuery({ queryKey: QK.calibration, queryFn: api.calibration, staleTime: ARTIFACT_STALE_MS });

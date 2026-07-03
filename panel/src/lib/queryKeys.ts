@@ -17,11 +17,12 @@ export const QK = {
   screen: (runId: string) => ["screen", runId] as const,
   screenReport: (runId: string) => ["screen-report", runId] as const,
 
-  // Watchlist / 墓地 / FFD
+  // Watchlist / 墓地 / FFD / 证据补齐队列
   watchlist: ["watchlist"] as const,
   graveyard: (reason?: string, limit?: number, offset?: number) =>
     ["graveyard", reason ?? "all", limit ?? 100, offset ?? 0] as const,
   ffdReports: (status?: string) => ["ffd-reports", status ?? "all"] as const,
+  evidenceQueue: ["evidence-queue"] as const,
 
   // 评估
   calibration: ["calibration"] as const,

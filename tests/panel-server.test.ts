@@ -107,6 +107,7 @@ describe("panel server", () => {
         graveyardEntry("000003", "below-entry-bar", "2026-06-03T00:00:00.000Z"),
         graveyardEntry("000004", "downgraded", "2026-06-04T00:00:00.000Z"),
         graveyardEntry("000005", "below-entry-bar", "2026-06-05T00:00:00.000Z"),
+        graveyardEntry("000006", "evidence-gap", "2026-06-06T00:00:00.000Z"),
       ]),
     );
     await fs.writeFile(
@@ -120,6 +121,25 @@ describe("panel server", () => {
     // ladder history cache fixture
     await fs.mkdir(path.join(dataRoot, "runs", "ladder"), { recursive: true });
     await fs.writeFile(path.join(dataRoot, "runs", "ladder", "2026-06-27.json"), JSON.stringify(ladderFixture("2026-06-27")));
+    // evidence queue artifact fixture（契约：score 降序，上限 50 条；面板只读透传）
+    await fs.writeFile(
+      path.join(dataRoot, "runs", "evidence-queue.json"),
+      JSON.stringify({
+        updatedAt: "2026-07-02T09:00:00.000Z",
+        entries: [
+          {
+            code: "600519",
+            name: "候选一",
+            score: 78.5,
+            confidence: "low",
+            matchedThemes: ["AI 光互连"],
+            reasons: ["研报覆盖不足，先验达标但缺材料"],
+            nextActions: ["补齐年报与产能数据"],
+            queuedAt: "2026-07-02T09:00:00.000Z",
+          },
+        ],
+      }),
+    );
     // static dist fixture + a secret outside dist
     await fs.mkdir(path.join(dataRoot, "panel", "dist", "assets"), { recursive: true });
     await fs.writeFile(path.join(dataRoot, "panel", "dist", "index.html"), "<!doctype html><title>panel</title>");
@@ -245,6 +265,12 @@ describe("panel server", () => {
       expect(await response.json()).toBeNull();
     });
 
+    it("GET /api/evidence-queue returns null when the artifact is missing", async () => {
+      const response = await fetch(`${emptyBase}/api/evidence-queue`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toBeNull();
+    });
+
     it("serves a plain-text hint when panel/dist is not built", async () => {
       const response = await fetch(`${emptyBase}/`);
       expect(response.status).toBe(200);
@@ -302,8 +328,8 @@ describe("panel server", () => {
     it("paginates with default summary over the full set", async () => {
       const response = await fetch(`${dataBase}/api/graveyard?limit=2&offset=2`);
       const body = await response.json();
-      expect(body.summary.total).toBe(5);
-      expect(body.total).toBe(5);
+      expect(body.summary.total).toBe(6);
+      expect(body.total).toBe(6);
       expect(body.entries).toHaveLength(2);
     });
 
@@ -314,9 +340,31 @@ describe("panel server", () => {
       expect(body.entries.every((entry: GraveyardEntry) => entry.reason === "below-entry-bar")).toBe(true);
     });
 
+    it("accepts the evidence-gap reason filter (semantic tiering)", async () => {
+      const response = await fetch(`${dataBase}/api/graveyard?reason=evidence-gap`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.total).toBe(1);
+      expect(body.entries[0].code).toBe("000006");
+      expect(body.entries[0].reason).toBe("evidence-gap");
+    });
+
     it("rejects an unknown reason", async () => {
       const response = await fetch(`${dataBase}/api/graveyard?reason=oops`);
       expect(response.status).toBe(400);
+    });
+  });
+
+  describe("evidence queue", () => {
+    it("serves runs/evidence-queue.json as-is", async () => {
+      const response = await fetch(`${dataBase}/api/evidence-queue`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.updatedAt).toBe("2026-07-02T09:00:00.000Z");
+      expect(body.entries).toHaveLength(1);
+      expect(body.entries[0].code).toBe("600519");
+      expect(body.entries[0].score).toBe(78.5);
+      expect(body.entries[0].matchedThemes).toEqual(["AI 光互连"]);
     });
   });
 
@@ -379,6 +427,15 @@ describe("panel server", () => {
       const second = body.positions.find((position: { code: string }) => position.code === "000002");
       expect(second.graveyard.reason).toBe("kill-triggered");
       expect(first.graveyard).toBeUndefined();
+    });
+
+    it("exposes score and confidence on the graveyard join (semantic tiering needs them)", async () => {
+      const body = await (await fetch(`${dataBase}/api/portfolio`)).json();
+      const second = body.positions.find((position: { code: string }) => position.code === "000002");
+      expect(second.graveyard.score).toBe(60);
+      expect(second.graveyard.confidence).toBe("medium");
+      expect(second.graveyard.buriedAt).toBe("2026-06-02T00:00:00.000Z");
+      expect(second.graveyard.detail).toBe("测试条目");
     });
   });
 
@@ -507,6 +564,11 @@ describe("panel server authentication", () => {
 
     it("protects /api/health (data freshness leaks)", async () => {
       const response = await fetch(`${authBase}/api/health`);
+      expect(response.status).toBe(401);
+    });
+
+    it("protects /api/evidence-queue", async () => {
+      const response = await fetch(`${authBase}/api/evidence-queue`);
       expect(response.status).toBe(401);
     });
 
