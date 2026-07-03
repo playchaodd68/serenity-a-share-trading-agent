@@ -2,6 +2,7 @@ import path from "node:path";
 import { getConfig } from "../config.js";
 import { readJsonFile } from "../utils/fs.js";
 import { listFfdReportManifests, type FfdReportChunk, type FfdReportManifest } from "./report-library.js";
+import { loadVaultNoteDocuments } from "./vault-notes.js";
 
 // P0-1 of the RAG upgrade: local retrieval over the accepted broker-report library.
 // Lexical BM25 with CJK bigram tokenization — zero dependencies, deterministic, and the
@@ -21,7 +22,7 @@ export interface LibraryDocument {
   sectionTitle?: string;
   topics: string[];
   companies: string[];
-  sourceTier: "P1";
+  sourceTier: "P1" | "user-thesis" | "system-note";
   requiresP0Verification: boolean;
   tokenEstimate: number;
   // Absolute paths for deep links: the Obsidian note (preferred) and the raw file.
@@ -111,7 +112,7 @@ function toDocuments(manifest: FfdReportManifest, chunks: FfdReportChunk[]): Lib
     }));
 }
 
-export async function buildLibrarySearchIndex(options: { processedDir?: string; includeStaged?: boolean } = {}): Promise<LibrarySearchIndex> {
+export async function buildLibrarySearchIndex(options: { processedDir?: string; includeStaged?: boolean; includeVaultNotes?: boolean; vaultKbPath?: string } = {}): Promise<LibrarySearchIndex> {
   const processedDir = options.processedDir ? path.resolve(options.processedDir) : path.resolve(getConfig().ffdReportProcessedDir);
   const manifests = await listFfdReportManifests(processedDir);
   const eligible = manifests.filter((manifest) =>
@@ -120,14 +121,22 @@ export async function buildLibrarySearchIndex(options: { processedDir?: string; 
 
   const documents: IndexedDocument[] = [];
   const documentFrequency = new Map<string, number>();
+  const addDocument = (document: LibraryDocument) => {
+    const tokens = tokenize(`${document.title}\n${document.sectionTitle ?? ""}\n${document.text}`);
+    const termFrequencies = new Map<string, number>();
+    for (const token of tokens) termFrequencies.set(token, (termFrequencies.get(token) ?? 0) + 1);
+    for (const term of termFrequencies.keys()) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+    documents.push({ document, termFrequencies, length: tokens.length });
+  };
   for (const manifest of eligible) {
     const chunks = await readJsonFile<FfdReportChunk[]>(manifest.chunksPath, []);
     for (const document of toDocuments(manifest, chunks)) {
-      const tokens = tokenize(`${document.title}\n${document.sectionTitle ?? ""}\n${document.text}`);
-      const termFrequencies = new Map<string, number>();
-      for (const token of tokens) termFrequencies.set(token, (termFrequencies.get(token) ?? 0) + 1);
-      for (const term of termFrequencies.keys()) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
-      documents.push({ document, termFrequencies, length: tokens.length });
+      addDocument(document);
+    }
+  }
+  if (options.includeVaultNotes ?? true) {
+    for (const document of await loadVaultNoteDocuments(options.vaultKbPath)) {
+      addDocument(document);
     }
   }
   const averageLength = documents.length === 0 ? 0 : documents.reduce((sum, doc) => sum + doc.length, 0) / documents.length;

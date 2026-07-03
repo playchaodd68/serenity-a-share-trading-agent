@@ -92,7 +92,7 @@ beforeAll(async () => {
     "光模块月报",
     "光模块与 CPO 产业链跟踪：需求延续高景气，核心内容为光互联器件与封装环节的排产，交换机端口升级带动组件量价齐升。",
   );
-  searchIndex = await buildLibrarySearchIndex({ processedDir });
+  searchIndex = await buildLibrarySearchIndex({ processedDir, includeVaultNotes: false });
 });
 
 describe("embedding index build (incremental by content hash)", () => {

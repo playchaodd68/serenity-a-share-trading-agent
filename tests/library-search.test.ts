@@ -96,19 +96,19 @@ describe("CJK tokenizer", () => {
 
 describe("library BM25 search over fixture corpus", () => {
   it("indexes accepted reports only by default and drops tiny fragments", async () => {
-    const index = await buildLibrarySearchIndex({ processedDir });
+    const index = await buildLibrarySearchIndex({ processedDir, includeVaultNotes: false });
     expect(index.reportCount).toBe(2);
     expect(index.documents.some((doc) => doc.document.sectionTitle === "页眉碎片")).toBe(false);
     expect(index.documents.some((doc) => doc.document.reportId === "REP-STAGED")).toBe(false);
   });
 
   it("includes staged reports when asked", async () => {
-    const index = await buildLibrarySearchIndex({ processedDir, includeStaged: true });
+    const index = await buildLibrarySearchIndex({ processedDir, includeStaged: true, includeVaultNotes: false });
     expect(index.reportCount).toBe(3);
   });
 
   it("ranks the target report first for a chokepoint query", async () => {
-    const index = await buildLibrarySearchIndex({ processedDir });
+    const index = await buildLibrarySearchIndex({ processedDir, includeVaultNotes: false });
     const results = scoreBm25(index, "溅射靶材 国产替代 认证");
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].document.reportId).toBe("REP-TARGET");
@@ -117,13 +117,13 @@ describe("library BM25 search over fixture corpus", () => {
   });
 
   it("company-name query hits the report even though the title lacks the name", async () => {
-    const index = await buildLibrarySearchIndex({ processedDir });
+    const index = await buildLibrarySearchIndex({ processedDir, includeVaultNotes: false });
     const results = scoreBm25(index, "江丰电子");
     expect(results[0]?.document.reportId).toBe("REP-TARGET");
   });
 
   it("renders provenance with source ID and P1 warning", async () => {
-    const index = await buildLibrarySearchIndex({ processedDir });
+    const index = await buildLibrarySearchIndex({ processedDir, includeVaultNotes: false });
     const results = scoreBm25(index, "靶材").slice(0, 3);
     const rendered = renderLibrarySearchResults("靶材", results);
     expect(rendered).toContain("P1-REP-TARGET");

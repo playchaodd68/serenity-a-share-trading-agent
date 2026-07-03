@@ -255,3 +255,27 @@ describe("bear-case rendering", () => {
     expect(rendered).toContain("weakened");
   });
 });
+
+describe("field-name drift tolerance (live-model aliases)", () => {
+  it("accepts label/comment aliases and positive posteriorDelta magnitudes", () => {
+    const drifted = {
+      steel_man: VALID_BEAR.steelMan,
+      findings: VALID_BEAR.failureFindings.map((finding) => ({
+        label: finding.questionId,
+        comment: finding.finding,
+        severity: finding.severity.toUpperCase(),
+        evidence: finding.evidenceRefs,
+        confidence: finding.confidence,
+      })),
+      arguments: [{ argument: "二次供货认证完成后份额受损", evidence: ["P1-688999-BROKER"] }],
+      questions: ["认证进度的 P0 证据？"],
+      killCriteria: [{ trigger: "第二供应商通过认证则卡点失效", sourceCheck: "客户公告", horizonDays: 400, posteriorDelta: 12 }],
+      verdict: "weakened",
+    };
+    const parsed = parseBearCase(JSON.stringify(drifted));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.failureFindings[0].questionId).toBe("second-source");
+    expect(parsed!.killCriterionCandidates[0].posteriorDelta).toBe(-12);
+    expect(parsed!.killCriterionCandidates[0].horizonDays).toBe(365);
+  });
+});

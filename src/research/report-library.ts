@@ -1752,3 +1752,65 @@ export function renderFfdRechunkRun(run: FfdRechunkRun): string {
     ...(run.warnings.length > 0 ? [`Warnings:`, ...run.warnings.slice(0, 10).map((warning) => `- ${warning}`)] : []),
   ].join("\n");
 }
+
+// --- A-layer dedup: duplicate detection at acceptance time -----------------------------
+// Duplicate downloads of the same report arrive with different filenames/IDs. Exact
+// checksum match or normalized-title match against already-accepted manifests skips the
+// duplicate instead of double-counting it in the evidence base.
+
+export function normalizeReportTitle(title: string): string {
+  return title.replace(/[\s\d\-—－_【】\[\]()（）.·:：,，;；]/g, "").toLowerCase();
+}
+
+function titleBigrams(normalized: string): Set<string> {
+  const grams = new Set<string>();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    grams.add(normalized.slice(index, index + 2));
+  }
+  return grams;
+}
+
+// Overlap coefficient (intersection / min set size): robust to the common duplicate
+// pattern where one title is a prefixed/elaborated variant of the other.
+export function titleSimilarity(a: string, b: string): number {
+  const gramsA = titleBigrams(normalizeReportTitle(a));
+  const gramsB = titleBigrams(normalizeReportTitle(b));
+  if (gramsA.size === 0 || gramsB.size === 0) return 0;
+  let intersection = 0;
+  for (const gram of gramsA) if (gramsB.has(gram)) intersection += 1;
+  return intersection / Math.min(gramsA.size, gramsB.size);
+}
+
+const TITLE_DUP_THRESHOLD = 0.75;
+const TITLE_DUP_STRICT_THRESHOLD = 0.9;
+const TITLE_DUP_MIN_LENGTH = 8;
+
+function metadataAgrees(a: FfdReportManifest, b: FfdReportManifest): boolean {
+  if (a.publishedAt && b.publishedAt) return a.publishedAt === b.publishedAt;
+  if (a.institution && b.institution) return a.institution === b.institution;
+  return false;
+}
+
+export function findDuplicateOf(
+  candidate: FfdReportManifest,
+  accepted: FfdReportManifest[],
+): { duplicateOf: string; reason: "checksum" | "title" } | null {
+  for (const existing of accepted) {
+    if (existing.id === candidate.id) continue;
+    if (existing.checksum && existing.checksum === candidate.checksum) {
+      return { duplicateOf: existing.id, reason: "checksum" };
+    }
+  }
+  if (normalizeReportTitle(candidate.title).length >= TITLE_DUP_MIN_LENGTH) {
+    for (const existing of accepted) {
+      if (existing.id === candidate.id) continue;
+      if (normalizeReportTitle(existing.title).length < TITLE_DUP_MIN_LENGTH) continue;
+      const similarity = titleSimilarity(candidate.title, existing.title);
+      // High title overlap + agreeing date/institution, or near-identical titles alone.
+      if ((similarity >= TITLE_DUP_THRESHOLD && metadataAgrees(candidate, existing)) || similarity >= TITLE_DUP_STRICT_THRESHOLD) {
+        return { duplicateOf: existing.id, reason: "title" };
+      }
+    }
+  }
+  return null;
+}

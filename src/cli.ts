@@ -51,6 +51,8 @@ import { isOllamaAvailable, resolveEmbeddingRuntime } from "./research/embedding
 import { loadRetrievalEvalCases, renderRetrievalEval, runRetrievalEval } from "./research/library-eval.js";
 import { buildClaimsEntityIndex, lookupCompanyClaims, summarizeClaimsIndex } from "./research/claims-index.js";
 import { generateCompanyDossiers, renderCompanyClaims, renderDossierRun } from "./research/dossier.js";
+import { findDuplicateOf } from "./research/report-library.js";
+import { writeBearCaseNote, writeScreenRunNote } from "./research/obsidian-writeback.js";
 import { rechunkFfdReports, renderFfdRechunkRun } from "./research/report-library.js";
 import { loadDecisionLog, pendingEntriesFromRun, resolveDecisionEntries, saveDecisionLog, summarizeDecisionLog } from "./research/decision-log.js";
 import { createRng, initialArms, pickNextTheme, updateArm, type ThemeArmState } from "./research/direction-bandit.js";
@@ -431,13 +433,27 @@ async function acceptFfdReportCommand(input: string): Promise<string> {
 }
 
 async function acceptQualityFfdReportsCommand(): Promise<string> {
-  const targets = (await listFfdReportManifests()).filter((manifest) => manifest.status !== "accepted" && qualityForManifest(manifest).canAccept);
+  const allManifests = await listFfdReportManifests();
+  const alreadyAccepted = allManifests.filter((manifest) => manifest.status === "accepted");
+  const targets = allManifests.filter((manifest) => manifest.status !== "accepted" && qualityForManifest(manifest).canAccept);
   if (targets.length === 0) return "No quality-gate-passing staged FFD reports to accept.";
 
   const accepted = [];
+  const skippedDuplicates: string[] = [];
+  const acceptedPool = [...alreadyAccepted];
   for (const manifest of targets) {
+    const duplicate = findDuplicateOf(manifest, acceptedPool);
+    if (duplicate) {
+      skippedDuplicates.push(`${manifest.id}（${duplicate.reason} 重复于 ${duplicate.duplicateOf}）`);
+      continue;
+    }
     accepted.push(await acceptFfdReport(manifest.id));
+    acceptedPool.push(manifest);
   }
+  if (skippedDuplicates.length > 0) {
+    console.warn(`跳过重复研报 ${skippedDuplicates.length} 篇：\n${skippedDuplicates.map((item) => `- ${item}`).join("\n")}`);
+  }
+  if (accepted.length === 0) return `全部 ${targets.length} 篇均为重复研报，未新增接受。`;
   const merged = mergeSources(await loadSourceRegistry(), accepted.map((item) => item.source));
   await saveSourceRegistry(merged);
   await syncKnowledgebaseSources(merged);
@@ -557,6 +573,11 @@ async function runScreenPipeline(sendNotification = true) {
       ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched })
       : preliminaryRun;
   const completed = await writeScreenReport(run);
+  try {
+    await writeScreenRunNote(completed);
+  } catch (error) {
+    console.warn(`screen-run note write failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const watchlist = updateWatchlistFromRun(completed, await loadWatchlist());
   await saveWatchlist(watchlist);
   const graveyard = await updateGraveyard(completed, watchlist, matched);
@@ -651,6 +672,12 @@ async function runBearForCode(query: string): Promise<{ text: string; ok: boolea
   const record = await runBearCasePass(candidate, client, { runId: latest.runId });
   await saveBearCase(record);
   const verdict = synthesizeVerdict(candidate, record.report);
+  try {
+    const notePath = await writeBearCaseNote(record, verdict);
+    console.log(`bear-case note written: ${notePath}`);
+  } catch (error) {
+    console.warn(`bear-case note write failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const lines = [renderBearCase(record), "", renderVerdict(verdict)];
   if (record.report != null) {
     const watchlist = await loadWatchlist();
