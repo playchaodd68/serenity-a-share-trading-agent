@@ -625,6 +625,32 @@ export interface PortfolioResponse {
   positions: PortfolioPositionView[];
 }
 
+// ===== 动作执行任务（POST /api/actions/:name → GET /api/jobs/:id；契约见服务端动作执行层） =====
+
+export type JobStatus = "running" | "succeeded" | "failed";
+
+/** 面板可触发的服务端动作名（POST /api/actions/:name 的 :name 白名单）。 */
+export type JobActionName =
+  | "screen"
+  | "backtest"
+  | "resolutions-update"
+  | "consensus-archive"
+  | "reports-convert"
+  | "reports-accept-quality"
+  | "reports-accept"
+  | "reports-reject";
+
+export interface JobRecord {
+  id: string;
+  name: JobActionName;
+  params: Record<string, unknown>;
+  status: JobStatus;
+  startedAt: string;
+  endedAt?: string;
+  exitCode?: number;
+  logTail: string[];
+}
+
 // ===== 证据补齐队列（runs/evidence-queue.json；/api/evidence-queue 只读透传，缺失为 null） =====
 
 export interface EvidenceQueueEntry {

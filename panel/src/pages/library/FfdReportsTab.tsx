@@ -1,9 +1,12 @@
 // FFD 卖方研报清单：status 五态过滤（URL ?ffdStatus=），
 // 行内展示 title/institution/industry/publishedAt/claimCount/summary/tags。
-import { FileText } from "lucide-react";
+// 审核工作台：staged（待审核）行内「接受 / 拒绝」，工具栏「质量门批量接受 / 转换新研报」，
+// 动作走 JobButton（POST /api/actions/reports-*），终态后清单自动刷新。
+import { Check, FileInput, FileText, ShieldCheck, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { JobButton } from "@/components/ui/JobButton";
 import { SectionTitle } from "@/components/ui/SectionTitle";
 import { fmtDate } from "@/lib/format";
 import type { FfdReportManifest, FfdReportStatus } from "@/lib/types";
@@ -22,6 +25,36 @@ const FILTER_OPTIONS: ReadonlyArray<{ value: FfdFilter; label: string }> = [
 
 function parseFilter(raw: string | null): FfdFilter {
   return raw && (FFD_STATUSES as readonly string[]).includes(raw) ? (raw as FfdReportStatus) : "";
+}
+
+/** staged（待审核）行的审核操作：接受（确认框含强制接受勾选）/ 拒绝（danger + 确认）。 */
+function ReportReviewActions({ report }: { report: FfdReportManifest }) {
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <JobButton
+        action="reports-accept"
+        params={{ id: report.id }}
+        label="接受"
+        size="sm"
+        variant="secondary"
+        icon={Check}
+        confirmTitle="接受研报"
+        confirmText={`将「${report.title}」采纳入知识库。质量门未通过时任务会失败，可勾选下方选项跳过。`}
+        confirmCheckbox={{ label: "强制接受（跳过质量门）", param: "force" }}
+      />
+      <JobButton
+        action="reports-reject"
+        params={{ id: report.id }}
+        label="拒绝"
+        size="sm"
+        variant="secondary"
+        danger
+        icon={X}
+        confirmTitle="拒绝研报"
+        confirmText={`确认拒绝「${report.title}」？拒绝后标记为已拒绝，不进入知识库。`}
+      />
+    </div>
+  );
 }
 
 function ReportRow({ report }: { report: FfdReportManifest }) {
@@ -63,6 +96,7 @@ function ReportRow({ report }: { report: FfdReportManifest }) {
           )}
         </div>
       )}
+      {report.status === "staged" && <ReportReviewActions report={report} />}
     </li>
   );
 }
@@ -91,8 +125,18 @@ export function FfdReportsTab() {
         title="FFD 卖方研报"
         hint={!reportsQuery.isLoading && reports.length > 0 ? `${reports.length} 篇` : undefined}
       />
-      <div className="mb-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <FilterPills options={FILTER_OPTIONS} value={filter} onChange={setFilter} aria-label="按状态过滤研报" />
+        <div className="flex items-center gap-1.5" role="group" aria-label="研报批量操作">
+          <JobButton
+            action="reports-accept-quality"
+            label="质量门批量接受"
+            size="sm"
+            variant="secondary"
+            icon={ShieldCheck}
+          />
+          <JobButton action="reports-convert" label="转换新研报" size="sm" variant="secondary" icon={FileInput} />
+        </div>
       </div>
 
       {reportsQuery.isLoading ? (
@@ -106,9 +150,8 @@ export function FfdReportsTab() {
               "切换到「全部」查看其他状态的研报。"
             ) : (
               <>
-                将 PDF 研报放入 reports/inbox 后运行{" "}
-                <code className="num rounded-input bg-raised px-1.5 py-0.5 text-xs">npm run reports:convert</code>
-                ，处理产物（manifest）会出现在 reports/ffd/processed 并在此列出。
+                将 PDF 研报放入 <code className="num rounded-input bg-raised px-1.5 py-0.5 text-xs">reports/inbox</code>{" "}
+                后点击上方「转换新研报」，处理产物（manifest）会出现在 reports/ffd/processed 并在此列出。
               </>
             )
           }

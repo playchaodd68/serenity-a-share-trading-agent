@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type http from "node:http";
 import type { AddressInfo } from "node:net";
 import { startPanelServer } from "../src/panel/server.js";
+import type { JobRecord, JobSpawnImpl } from "../src/panel/jobs.js";
 import type { LimitUpLadderSnapshot } from "../src/connectors/limit-up-ladder.js";
 import type { GraveyardEntry, ScreenRun, WatchlistEntry } from "../src/types.js";
 
@@ -798,5 +800,229 @@ describe("panel server authentication", () => {
       const locked = await login(rateBase, PASSWORD, { "x-forwarded-for": "10.0.0.99" });
       expect(locked.status).toBe(429);
     });
+  });
+});
+
+describe("panel job routes (操作执行)", () => {
+  let jobsRoot: string;
+  let jobsServer: http.Server;
+  let jobsBase: string;
+  // 假命令延时可按用例调节：busy 用例需要慢任务占住单并发槽位。
+  let nextDelayMs = 0;
+
+  const jobSpawnImpl: JobSpawnImpl = (_command, _args, options) =>
+    spawn(process.execPath, ["-e", `console.log("fake run"); setTimeout(() => {}, ${nextDelayMs});`], options);
+
+  async function postAction(name: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
+    return fetch(`${jobsBase}/api/actions/${name}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  async function waitForJobOverHttp(jobId: string): Promise<JobRecord> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const record = (await (await fetch(`${jobsBase}/api/jobs/${jobId}`)).json()) as JobRecord;
+      if (record.status !== "running") return record;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`job ${jobId} did not settle in time`);
+  }
+
+  beforeAll(async () => {
+    delete process.env.PANEL_PASSWORD;
+    jobsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-jobs-http-"));
+    jobsServer = await startPanelServer({
+      port: 0,
+      rootDir: jobsRoot,
+      jobSpawnImpl,
+      fetchLadder: async () => {
+        throw new Error("network disabled in tests");
+      },
+      now: () => new Date(`${TODAY}T05:00:00.000Z`),
+    });
+    jobsBase = `http://127.0.0.1:${(jobsServer.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => jobsServer.close(resolve));
+    await fs.rm(jobsRoot, { recursive: true, force: true });
+  });
+
+  it("未配置密码时动作端点保持开放：POST /api/actions/screen 返回 202 {jobId}", async () => {
+    const response = await postAction("screen", {});
+    expect(response.status).toBe(202);
+    const body = await response.json();
+    expect(body.jobId).toMatch(/^job-/);
+    const record = await waitForJobOverHttp(body.jobId);
+    expect(record.status).toBe("succeeded");
+  });
+
+  it("GET /api/jobs/:id returns the JobRecord contract fields", async () => {
+    const { jobId } = await (await postAction("screen", {})).json();
+    const record = await waitForJobOverHttp(jobId);
+    expect(record.id).toBe(jobId);
+    expect(record.name).toBe("screen");
+    expect(record.params).toEqual({});
+    expect(record.status).toBe("succeeded");
+    expect(typeof record.startedAt).toBe("string");
+    expect(typeof record.endedAt).toBe("string");
+    expect(record.exitCode).toBe(0);
+    expect(record.logTail).toContain("fake run");
+  });
+
+  it("GET /api/jobs lists jobs newest first and honors limit", async () => {
+    const { jobId } = await (await postAction("consensus-archive", {})).json();
+    await waitForJobOverHttp(jobId);
+    const body = await (await fetch(`${jobsBase}/api/jobs`)).json();
+    expect(Array.isArray(body.jobs)).toBe(true);
+    expect(body.jobs[0].id).toBe(jobId);
+    const limited = await (await fetch(`${jobsBase}/api/jobs?limit=1`)).json();
+    expect(limited.jobs).toHaveLength(1);
+  });
+
+  it("rejects an unknown action with 400", async () => {
+    const response = await postAction("nuke-everything", {});
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBeDefined();
+  });
+
+  it("rejects an invalid reports-accept id with 400", async () => {
+    const response = await postAction("reports-accept", { id: "../../etc/passwd" });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a non-json content-type with 400", async () => {
+    const response = await fetch(`${jobsBase}/api/actions/screen`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "screen",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a malformed JSON body with 400", async () => {
+    const response = await fetch(`${jobsBase}/api/actions/screen`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{oops",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 409 {error, runningJobId} while another job is running", async () => {
+    nextDelayMs = 500;
+    try {
+      const first = await postAction("screen", {});
+      expect(first.status).toBe(202);
+      const { jobId } = await first.json();
+
+      nextDelayMs = 0;
+      const busy = await postAction("consensus-archive", {});
+      expect(busy.status).toBe(409);
+      const body = await busy.json();
+      expect(body.error).toBe("已有任务运行中");
+      expect(body.runningJobId).toBe(jobId);
+
+      const record = await waitForJobOverHttp(jobId);
+      expect(record.status).toBe("succeeded");
+    } finally {
+      nextDelayMs = 0;
+    }
+  });
+
+  it("returns 404 for an unknown job id", async () => {
+    const response = await fetch(`${jobsBase}/api/jobs/job-does-not-exist`);
+    expect(response.status).toBe(404);
+  });
+
+  it("rejects GET on the action endpoint and POST on /api/jobs with 405", async () => {
+    const getAction = await fetch(`${jobsBase}/api/actions/screen`);
+    expect(getAction.status).toBe(405);
+    const postJobs = await fetch(`${jobsBase}/api/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(postJobs.status).toBe(405);
+  });
+});
+
+describe("panel job routes authentication", () => {
+  const PASSWORD = "panel-jobs-secret";
+
+  let authRoot: string;
+  let authServer: http.Server;
+  let authBase: string;
+
+  const jobSpawnImpl: JobSpawnImpl = (_command, _args, options) =>
+    spawn(process.execPath, ["-e", 'console.log("fake run");'], options);
+
+  beforeAll(async () => {
+    delete process.env.PANEL_PASSWORD;
+    authRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-jobs-auth-"));
+    authServer = await startPanelServer({
+      port: 0,
+      rootDir: authRoot,
+      password: PASSWORD,
+      jobSpawnImpl,
+      fetchLadder: async () => {
+        throw new Error("network disabled in tests");
+      },
+      now: () => new Date(`${TODAY}T05:00:00.000Z`),
+    });
+    authBase = `http://127.0.0.1:${(authServer.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => authServer.close(resolve));
+    await fs.rm(authRoot, { recursive: true, force: true });
+  });
+
+  it("returns 401 on POST /api/actions/screen without a cookie", async () => {
+    const response = await fetch(`${authBase}/api/actions/screen`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+  });
+
+  it("returns 401 on GET /api/jobs and /api/jobs/:id without a cookie", async () => {
+    expect((await fetch(`${authBase}/api/jobs`)).status).toBe(401);
+    expect((await fetch(`${authBase}/api/jobs/job-anything`)).status).toBe(401);
+  });
+
+  it("unlocks actions and job queries after login", async () => {
+    const loginResponse = await fetch(`${authBase}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+    expect(loginResponse.status).toBe(200);
+    const cookie = (loginResponse.headers.get("set-cookie") ?? "").split(";")[0]!;
+
+    const action = await fetch(`${authBase}/api/actions/screen`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: "{}",
+    });
+    expect(action.status).toBe(202);
+    const { jobId } = await action.json();
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const record = (await (await fetch(`${authBase}/api/jobs/${jobId}`, { headers: { cookie } })).json()) as JobRecord;
+      if (record.status !== "running") {
+        expect(record.status).toBe("succeeded");
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    const jobs = await fetch(`${authBase}/api/jobs`, { headers: { cookie } });
+    expect(jobs.status).toBe(200);
+    expect((await (jobs.json() as Promise<{ jobs: JobRecord[] }>)).jobs.length).toBeGreaterThanOrEqual(1);
   });
 });

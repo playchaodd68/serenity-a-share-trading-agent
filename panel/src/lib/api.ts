@@ -13,6 +13,8 @@ import type {
   FfdReportStatus,
   GraveyardReason,
   GraveyardResponse,
+  JobActionName,
+  JobRecord,
   LadderHistoryPoint,
   LimitUpLadderSnapshot,
   OverviewResponse,
@@ -43,23 +45,28 @@ async function parseErrorMessage(res: Response): Promise<string> {
   }
 }
 
-async function failWith(res: Response): Promise<never> {
+async function failWith(res: Response, silentError = false): Promise<never> {
   const msg = await parseErrorMessage(res);
   if (res.status === 401) {
     // 401 交给 LoginGate 全屏接管，不再叠加错误 toast。
     window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
-  } else {
+  } else if (!silentError) {
     toast(msg, "error");
   }
   throw new Error(msg);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+interface RequestOptions {
+  /** true 时失败不弹全局错误 toast（高频轮询端点用，避免刷屏；401 仍派发登录门事件）。 */
+  silentError?: boolean;
+}
+
+async function request<T>(path: string, init?: RequestInit, opts?: RequestOptions): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  if (!res.ok) return failWith(res);
+  if (!res.ok) return failWith(res, opts?.silentError);
   return res.json() as Promise<T>;
 }
 
@@ -77,6 +84,45 @@ function qs(params: Record<string, string | number | undefined>): string {
   }
   const encoded = search.toString();
   return encoded ? `?${encoded}` : "";
+}
+
+// ===== 动作执行（POST /api/actions/:name → 202 {jobId}；409 = 已有任务运行中） =====
+
+/** POST /api/actions/:name 返回 409 时抛出：携带正在运行的 jobId，供调用方提示/跟踪。 */
+export class JobConflictError extends Error {
+  readonly runningJobId?: string;
+
+  constructor(message: string, runningJobId?: string) {
+    super(message);
+    this.name = "JobConflictError";
+    this.runningJobId = runningJobId;
+  }
+}
+
+/**
+ * 触发服务端动作。错误不弹全局 toast——由 JobButton/useJobRunner 按 409/400 语义分别提示。
+ * 202 → { jobId }；409 → 抛 JobConflictError；其余非 2xx → 抛 Error(服务端 error 文案)。
+ */
+async function postActionRequest(name: JobActionName, params?: Record<string, unknown>): Promise<{ jobId: string }> {
+  const res = await fetch(`/api/actions/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params ?? {}),
+  });
+  if (res.ok) return res.json() as Promise<{ jobId: string }>;
+  if (res.status === 401) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    throw new Error("登录状态已失效，请重新登录");
+  }
+  let body: { error?: string; message?: string; runningJobId?: string } = {};
+  try {
+    body = (await res.json()) as typeof body;
+  } catch {
+    // 非 JSON 错误体，退回状态行文案
+  }
+  const msg = body.error ?? body.message ?? `${res.status} ${res.statusText}`;
+  if (res.status === 409) throw new JobConflictError(msg, body.runningJobId);
+  throw new Error(msg);
 }
 
 // ===== Chat（既有 chat-server 语义，S6 使用） =====
@@ -145,6 +191,18 @@ export const api = {
 
   // 16. 证据补齐队列（runs/evidence-queue.json 缺失时为 null）
   evidenceQueue: () => request<EvidenceQueue | null>("/api/evidence-queue"),
+
+  // 17. 触发服务端动作（screen / backtest / reports-* 等，见 JobActionName）
+  postAction: postActionRequest,
+
+  // 18. 单任务状态（useJobRunner.watch 1.5s 轮询至终态；轮询端点静默失败）
+  getJob: (id: string) => request<JobRecord>(`/api/jobs/${encodeURIComponent(id)}`, undefined, { silentError: true }),
+
+  // 19. 任务列表（降序；useJobRunner 全局忙检测轮询；轮询端点静默失败）
+  listJobs: async (limit = 20): Promise<JobRecord[]> => {
+    const res = await request<{ jobs: JobRecord[] }>(`/api/jobs${qs({ limit })}`, undefined, { silentError: true });
+    return res.jobs;
+  },
 
   // 既有 chat-server 端点（S6 Chat 抽屉使用）
   chat: (payload: { sessionId?: string; message: string }) =>

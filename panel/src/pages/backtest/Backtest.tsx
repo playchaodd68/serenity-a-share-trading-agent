@@ -1,15 +1,18 @@
 // 回测页（蓝图 §2.4）：绩效 / 过拟合检验 / 分期明细 三 Tab。
 // Tab 骨架 adapted from tickflow-stock-panel (MIT) 的 Backtest 分段模式切换。
-// 数据：GET /api/backtest/latest（runs/quant-backtest-latest.json）；无工件时空态引导。
+// 数据：GET /api/backtest/latest（runs/quant-backtest-latest.json）；无工件时空态引导，
+// 可直接通过 JobButton 在线运行回测（POST /api/actions/backtest），运行中展示 logTail 进度。
 import { useState } from "react";
-import { FlaskConical, Gauge, LineChart, Rows3 } from "lucide-react";
+import { FlaskConical, Gauge, LineChart, Loader2, Play, RotateCw, Rows3 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { JobButton } from "@/components/ui/JobButton";
 import { cn } from "@/lib/cn";
-import { fmtDateTime, fmtPct } from "@/lib/format";
+import { fmtDateTime, fmtPct, fmtRelative } from "@/lib/format";
+import { useJobRunner } from "@/lib/useJobRunner";
 import { useBacktestLatest } from "@/lib/useSharedQueries";
-import type { QuantBacktestResult } from "@/lib/types";
+import type { JobRecord, QuantBacktestResult } from "@/lib/types";
 import { OverfittingPanel } from "./OverfittingPanel";
 import { PerformancePanel } from "./PerformancePanel";
 import { PeriodTable } from "./PeriodTable";
@@ -49,6 +52,28 @@ function TabSwitch({ active, onChange }: { active: TabKey; onChange: (tab: TabKe
   );
 }
 
+/** 回测运行中的进度条：spinner + logTail 尾行（等宽），任务终态后由缓存失效自动刷新页面数据。 */
+function BacktestProgress({ job, className }: { job: JobRecord; className?: string }) {
+  const lastLine = job.logTail.length > 0 ? job.logTail[job.logTail.length - 1] : "等待日志输出…";
+  return (
+    <div
+      role="status"
+      className={cn(
+        "flex min-w-0 items-center gap-2 rounded-card border border-line bg-surface px-3 py-2",
+        className,
+      )}
+    >
+      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" aria-hidden />
+      <span className="shrink-0 text-xs text-ink-2">
+        回测运行中 · 开始于 {fmtRelative(job.startedAt)}
+      </span>
+      <span className="num min-w-0 truncate text-2xs text-ink-3" title={lastLine}>
+        {lastLine}
+      </span>
+    </div>
+  );
+}
+
 /** 分期明细 Tab：执行约束统计条 + 分期表。 */
 function PeriodsPanel({ result }: { result: QuantBacktestResult }) {
   const stats = result.executionStats;
@@ -81,6 +106,9 @@ function PeriodsPanel({ result }: { result: QuantBacktestResult }) {
 export default function Backtest() {
   const [activeTab, setActiveTab] = useState<TabKey>("performance");
   const { data, isLoading } = useBacktestLatest();
+  const { runningJob } = useJobRunner();
+  // 无论从本页哪个按钮、Dashboard 还是其它标签页发起，只要在跑回测就展示进度
+  const backtestJob = runningJob?.name === "backtest" ? runningJob : undefined;
 
   if (isLoading) {
     return (
@@ -102,9 +130,22 @@ export default function Backtest() {
           title="尚无回测工件"
           hint={
             <>
-              回测结果读取 <code className="num text-xs">runs/quant-backtest-latest.json</code>，运行{" "}
-              <code className="num text-xs">npm run quant:backtest</code> 生成。
+              点击下方按钮在线生成回测（结果写入{" "}
+              <code className="num text-xs">runs/quant-backtest-latest.json</code>
+              ，拉取行情耗时较长，完成后本页自动刷新）。
             </>
+          }
+          action={
+            <div className="flex flex-col items-center gap-3">
+              <JobButton
+                action="backtest"
+                label="运行回测（拉取行情 + 撮合回测）"
+                variant="primary"
+                size="lg"
+                icon={Play}
+              />
+              {backtestJob && <BacktestProgress job={backtestJob} className="max-w-full" />}
+            </div>
           }
         />
       </div>
@@ -116,10 +157,16 @@ export default function Backtest() {
       <PageHeader
         title="回测"
         subtitle={`${data.strategy} · 生成于 ${fmtDateTime(data.generatedAt)}`}
-        right={<TabSwitch active={activeTab} onChange={setActiveTab} />}
+        right={
+          <div className="flex items-center gap-2">
+            <JobButton action="backtest" label="重新回测" variant="secondary" size="md" icon={RotateCw} />
+            <TabSwitch active={activeTab} onChange={setActiveTab} />
+          </div>
+        }
       />
 
       <div className="flex-1 space-y-5 px-5 py-4">
+        {backtestJob && <BacktestProgress job={backtestJob} />}
         {activeTab === "performance" && <PerformancePanel result={data} />}
         {activeTab === "overfitting" && <OverfittingPanel overfitting={data.overfitting} cscv={data.cscv} />}
         {activeTab === "periods" && <PeriodsPanel result={data} />}

@@ -36,4 +36,7 @@ export const QK = {
 
   // 账户
   portfolio: ["portfolio"] as const,
+
+  // 动作执行任务（useJobRunner 1.5s 轮询 /api/jobs）
+  jobs: ["jobs"] as const,
 } as const;

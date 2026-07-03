@@ -24,6 +24,7 @@ import { buildResolutionCalibration, loadResolutions } from "../research/resolut
 import { loadWatchlist } from "../research/watchlist.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { createPanelAuth } from "./auth.js";
+import { createJobRunner, type JobSpawnImpl } from "./jobs.js";
 import type {
   CalibrationSnapshot,
   GraveyardEntry,
@@ -41,6 +42,8 @@ import type { QuantBacktestResult } from "../quant/backtest.js";
 // disk cache) and reads runtime artifacts directly from disk. Missing artifact
 // files always degrade to null / empty payloads — the panel is a read-only
 // mirror and must render empty states instead of crashing.
+// 唯一的写例外：操作执行路由（POST /api/actions/:name 启动白名单管线任务、
+// GET /api/jobs* 查询），命令编排与安全约束都收敛在 src/panel/jobs.ts。
 
 export interface PanelServerOptions {
   /** Listening port; defaults to CHAT_SERVER_PORT (8788). Use 0 in tests. */
@@ -58,6 +61,10 @@ export interface PanelServerOptions {
   fetchLadder?: (date?: string) => Promise<LimitUpLadderSnapshot>;
   /** Injectable clock for "today" decisions; defaults to () => new Date(). */
   now?: () => Date;
+  /** 任务执行器 spawn 注入（测试用假命令验证动作路由）；默认 node:child_process.spawn。 */
+  jobSpawnImpl?: JobSpawnImpl;
+  /** 任务单步超时毫秒数（测试注入用）；默认 20 分钟。 */
+  jobStepTimeoutMs?: number;
 }
 
 const RUN_ID_PATTERN = /^screen-[A-Za-z0-9_-]{1,120}$/;
@@ -68,6 +75,9 @@ const DEFAULT_SCREENS_LIMIT = 50;
 const MAX_SCREENS_LIMIT = 200;
 const DEFAULT_LADDER_HISTORY_DAYS = 20;
 const MAX_LADDER_HISTORY_DAYS = 120;
+const DEFAULT_JOBS_LIMIT = 20;
+const MAX_JOBS_LIMIT = 100;
+const MAX_ACTION_BODY_BYTES = 64_000;
 
 const WATCHLIST_STATUSES: WatchlistStatus[] = ["evidence-needed", "investigating", "validated", "downgraded", "archived"];
 const GRAVEYARD_REASONS: GraveyardReason[] = ["below-entry-bar", "evidence-gap", "kill-triggered", "downgraded", "manual-reject"];
@@ -108,6 +118,30 @@ async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
     chunks.push(buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+}
+
+// 动作参数体：允许空 body（无参数动作），非空时必须是 JSON 对象（不接受数组/标量）。
+async function readActionParams(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.byteLength;
+    if (total > MAX_ACTION_BODY_BYTES) throw new Error("动作参数体过大。");
+    chunks.push(buffer);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (raw === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("请求体不是合法 JSON。");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("动作参数必须是 JSON 对象。");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -445,6 +479,14 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
     console.warn("[panel] 未配置 PANEL_PASSWORD，面板处于完全开放状态；如需密码保护请在 .env 中设置。");
   }
 
+  // 操作执行：面板 GUI 触发管线命令（白名单 + 单并发 + 审计），编排细节见 jobs.ts。
+  const jobs = createJobRunner({
+    rootDir,
+    spawnImpl: options.jobSpawnImpl,
+    now,
+    stepTimeoutMs: options.jobStepTimeoutMs,
+  });
+
   const sessions = new Map<string, TradingChatSession>();
   let ladderMemo: { key: string; at: number; snapshot: LimitUpLadderSnapshot } | null = null;
 
@@ -638,6 +680,83 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
     return false;
   }
 
+  // 操作执行路由：POST /api/actions/:name 启动任务，GET /api/jobs* 查询任务。
+  // 路径都在 /api/* 之下，天然处于统一鉴权入口的保护范围内；本函数自管 405 语义，
+  // 必须在外层"面板 API 仅支持 GET"闸门之前调用。
+  async function handleJobRoutes(request: IncomingMessage, url: URL, response: ServerResponse): Promise<boolean> {
+    const actionMatch = url.pathname.match(/^\/api\/actions\/([^/]+)$/);
+    if (actionMatch) {
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "动作端点仅支持 POST。" });
+        return true;
+      }
+      let name: string;
+      try {
+        name = decodeURIComponent(actionMatch[1]!);
+      } catch {
+        sendJson(response, 400, { error: "动作名无法解码。" });
+        return true;
+      }
+      const contentType = request.headers["content-type"] ?? "";
+      if (contentType !== "" && !contentType.toLowerCase().includes("application/json")) {
+        sendJson(response, 400, { error: "content-type 必须为 application/json。" });
+        return true;
+      }
+      let params: Record<string, unknown>;
+      try {
+        params = await readActionParams(request);
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        return true;
+      }
+      const outcome = await jobs.start(name, params);
+      if (!outcome.ok) {
+        sendJson(
+          response,
+          outcome.status,
+          outcome.status === 409 ? { error: outcome.error, runningJobId: outcome.runningJobId } : { error: outcome.error },
+        );
+        return true;
+      }
+      sendJson(response, 202, { jobId: outcome.jobId });
+      return true;
+    }
+
+    if (url.pathname === "/api/jobs") {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "任务列表仅支持 GET。" });
+        return true;
+      }
+      const limit = clampInt(url.searchParams.get("limit"), DEFAULT_JOBS_LIMIT, 1, MAX_JOBS_LIMIT);
+      sendJson(response, 200, { jobs: jobs.list(limit) });
+      return true;
+    }
+
+    const jobMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
+    if (jobMatch) {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "任务详情仅支持 GET。" });
+        return true;
+      }
+      let jobId: string;
+      try {
+        jobId = decodeURIComponent(jobMatch[1]!);
+      } catch {
+        sendJson(response, 400, { error: "jobId 参数无法解码。" });
+        return true;
+      }
+      const record = jobs.get(jobId);
+      if (!record) {
+        sendJson(response, 404, { error: "未找到该任务。" });
+        return true;
+      }
+      sendJson(response, 200, record);
+      return true;
+    }
+
+    return false;
+  }
+
   // 认证自身的三个端点（login/logout/status）保持开放，其余受保护路径由下方统一
   // 入口拦截——不允许任何路由自行判断鉴权（参考项目的 save 端点正是这样漏掉的）。
   async function handleAuthRoutes(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -700,6 +819,8 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
       }
 
       if (url.pathname.startsWith("/api/") || url.pathname === "/api") {
+        // 操作执行路由自管方法语义（POST /api/actions/*），必须先于 GET-only 闸门。
+        if (await handleJobRoutes(request, url, response)) return;
         if (request.method !== "GET") {
           sendJson(response, 405, { error: "面板 API 仅支持 GET。" });
           return;

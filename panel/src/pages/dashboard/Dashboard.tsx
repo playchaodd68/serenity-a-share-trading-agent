@@ -2,9 +2,10 @@
 // 版式借鉴 tickflow-stock-panel Dashboard 的 xl:grid-cols-[1fr_20rem] 主区+右栏骨架；
 // 顶部 4 个 display KPI 不加卡片框、裸排 + 细分隔线（改掉参考项目的均匀卡片密度）。
 // 数据：/api/overview 聚合端点（右栏迷你卡按需补 /api/resolutions、/api/ladder/history）。
-import { LayoutDashboard, RotateCw } from "lucide-react";
+import { Archive, LayoutDashboard, ListChecks, Radar, RotateCw } from "lucide-react";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { JobButton } from "@/components/ui/JobButton";
 import { fmtRelative } from "@/lib/format";
 import { useOverview } from "@/lib/useSharedQueries";
 import { CalibrationMiniCard } from "@/pages/dashboard/CalibrationMiniCard";
@@ -52,9 +53,26 @@ export default function Dashboard() {
         title="总览"
         subtitle="研究管线状态与今日关注"
         right={
-          data?.latestRun ? (
-            <span className="num text-2xs text-ink-3">最新批次 {fmtRelative(data.latestRun.generatedAt)}</span>
-          ) : undefined
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+            {data?.latestRun && (
+              <span className="num hidden text-2xs text-ink-3 md:inline">
+                最新批次 {fmtRelative(data.latestRun.generatedAt)}
+              </span>
+            )}
+            <div className="flex items-center gap-1.5" role="group" aria-label="管线操作">
+              <JobButton
+                action="screen"
+                label="运行筛选"
+                size="sm"
+                variant="secondary"
+                icon={Radar}
+                confirmTitle="运行全市场筛选"
+                confirmText="全市场筛选约需数分钟，运行期间其它动作将被禁用，完成后总览与批次列表自动刷新。"
+              />
+              <JobButton action="consensus-archive" label="一致预期存档" size="sm" variant="ghost" icon={Archive} />
+              <JobButton action="resolutions-update" label="决议对账" size="sm" variant="ghost" icon={ListChecks} />
+            </div>
+          </div>
         }
       />
 
