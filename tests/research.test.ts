@@ -44,7 +44,8 @@ const candidateP0: SourceRecord = {
   sourceType: "primary",
   publisher: "CNINFO",
   observedAt: "2026-06-01",
-  summary: "测试硅光披露 CPO、硅光、激光器客户验证与产能建设，订单、需求、供给缺口、价格、毛利、净利和 Q2 业绩兑现。",
+  // P0-3 后瓶颈/供需/预期差词只由 source 证据文本触发，年报摘要需自带卡点证据。
+  summary: "测试硅光披露 CPO、硅光、激光器与光芯片良率爬坡、测试设备认证通过，客户验证与产能建设，订单、需求、供给缺口、价格、毛利、净利和 Q2 业绩兑现。",
   evidenceTags: ["688999", "测试硅光", "CPO", "硅光", "candidate-direct"],
 };
 

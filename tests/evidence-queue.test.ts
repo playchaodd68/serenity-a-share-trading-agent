@@ -12,7 +12,7 @@ import {
 } from "../src/pipeline/evidence-queue.js";
 import { buryBelowBar, classifyBurialReason } from "../src/research/graveyard.js";
 import { screenCandidates } from "../src/screener.js";
-import type { AShareStock, GraveyardEntry } from "../src/types.js";
+import type { AShareStock, GraveyardEntry, SourceRecord } from "../src/types.js";
 
 const NOW = "2026-07-03T00:00:00.000Z";
 
@@ -209,6 +209,18 @@ describe("writeEvidenceQueue", () => {
 describe("screenCandidates evidence queue wiring", () => {
   let dir: string | undefined;
 
+  // 候选级定向来源：只覆盖强样本，弱样本保持 evidenceStatus=missing（P0-1 三态）。
+  const strongDirect: SourceRecord = {
+    id: "P1-000001-DIRECT",
+    title: "强样本 客户定点点评",
+    tier: "P1",
+    sourceType: "broker_report",
+    publisher: "test",
+    observedAt: "2026-07-01",
+    summary: "000001 强样本 光模块订单",
+    evidenceTags: ["000001", "强样本", "candidate-direct"],
+  };
+
   afterEach(async () => {
     if (dir) await fs.rm(dir, { recursive: true, force: true });
     dir = undefined;
@@ -219,7 +231,7 @@ describe("screenCandidates evidence queue wiring", () => {
     const filePath = path.join(dir, "evidence-queue.json");
     const strong = stock({ code: "000001", name: "强样本", pe: 35, turnover: 4, mainNetInflow: 1_000_000 });
     const weak = stock({ code: "000002", name: "弱样本", pe: null, turnover: 0.5, mainNetInflow: -1 });
-    const run = await screenCandidates([], { maxRows: 2, topN: 1, stocks: [strong, weak], evidenceQueuePath: filePath });
+    const run = await screenCandidates([strongDirect], { maxRows: 2, topN: 1, stocks: [strong, weak], evidenceQueuePath: filePath });
     expect(run.candidates).toHaveLength(1);
     expect(run.candidates[0].stock.code).toBe("000001");
 
@@ -234,7 +246,7 @@ describe("screenCandidates evidence queue wiring", () => {
     const filePath = path.join(dir, "evidence-queue.json");
     const strong = stock({ code: "000001", name: "强样本", pe: 35, turnover: 4, mainNetInflow: 1_000_000 });
     const weak = stock({ code: "000002", name: "弱样本", pe: null, turnover: 0.5, mainNetInflow: -1 });
-    const run = await screenCandidates([], {
+    const run = await screenCandidates([strongDirect], {
       maxRows: 2,
       topN: 1,
       stocks: [strong, weak],

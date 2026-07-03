@@ -45,17 +45,22 @@ export function classifyBurialReason(
 
 export function buryBelowBar(candidates: Candidate[], entryBar: number, now: string): GraveyardEntry[] {
   return candidates
-    .filter((candidate) => candidate.score < entryBar)
+    // 证据缺失（missing）的候选不参与席位竞争，无论分数一律归档进 evidence-gap 分流
+    // （P0-1 排名与死因一致化）；covered 候选仍按当日席位线裁切。
+    .filter((candidate) => candidate.score < entryBar || candidate.trace.evidenceStatus === "missing")
     .map((candidate) => {
       const themes = themesOf(candidate);
       const vetoes = activeVetoReasons(candidate);
       const reason = classifyBurialReason(candidate.confidence, themes, vetoes.length > 0);
+      // P0-2 席位线更名：entryBar 只是当日第 topN 名的分数（相对席位线，随日漂移），
+      // 不是校准过的质量线；evidence-gap 死因是证据缺失，detail 不得引用席位线。
+      const seatLine = `未获当日席位(第N名分数线 ${entryBar},随日漂移,非质量线)`;
       const detail =
         vetoes.length > 0
-          ? `Passed over below entry bar ${entryBar} at score ${candidate.score.toFixed(1)} after active veto: ${vetoes.join("；")}`.slice(0, 400)
+          ? `${seatLine} score ${candidate.score.toFixed(1)}，主动否决: ${vetoes.join("；")}`.slice(0, 400)
           : reason === "evidence-gap"
-            ? `Evidence gap below entry bar ${entryBar} at score ${candidate.score.toFixed(1)}: prior hit ${themes.join("/")} but coverage stayed low-confidence (unread, not refuted).`
-            : `Passed over below entry bar ${entryBar} at score ${candidate.score.toFixed(1)}.`;
+            ? `证据缺失(非负面): 先验命中 ${themes.join("/")} 但证据覆盖不足——未读过≠否决，补齐证据后再判。score ${candidate.score.toFixed(1)}`
+            : `${seatLine} score ${candidate.score.toFixed(1)}`;
       return {
         code: candidate.stock.code,
         name: candidate.stock.name,

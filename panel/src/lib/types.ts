@@ -342,6 +342,11 @@ export interface LimitUpStock {
   brokenCount: number;
   /** 首次封板时间 "HH:MM"，缺失为空串 */
   firstSealTime: string;
+  /**
+   * bias_turn 换手率乖离 = 近5日日均换手 / 自身近480交易日日均换手 − 1（P0-6 观察 overlay，
+   * 不参与任何评分/排序）。null = 抓取失败或历史不足；缺省 = 未计算（<2板或旧缓存）。
+   */
+  biasTurn?: number | null;
 }
 
 export interface LadderTier {

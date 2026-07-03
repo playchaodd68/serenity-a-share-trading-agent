@@ -54,7 +54,8 @@
     "chat:server": "tsx src/cli.ts chat-server",
     "panel:dev": "npm --prefix panel run dev",
     "panel:build": "npm --prefix panel run build",
-    "panel:server": "tsx src/cli.ts panel-server"
+    "panel:server": "tsx src/cli.ts panel-server",
+    "consensus:archive": "tsx src/cli.ts consensus-archive"
   },
   "keywords": [
     "a-share",

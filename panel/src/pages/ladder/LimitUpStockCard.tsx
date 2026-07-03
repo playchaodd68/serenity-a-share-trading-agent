@@ -2,6 +2,7 @@
 // 差异化：梯队高度着色用琥珀单色阶（tierTone.ts），禁用参考项目的红色热度渐变；
 // bull/bear 仅用于 pctChange 价格语义（tokens.css 铁律）。
 import { fmtPctPoint, fmtSealTime, fmtYi, priceColorClass, NA } from "@/lib/format";
+import { BIAS_TURN_TONE_CLASS, biasTurnRatio, biasTurnTone } from "@/pages/ladder/biasTurnTone";
 import { tierAlpha, warningMix } from "@/pages/ladder/tierTone";
 import type { LimitUpStock } from "@/lib/types";
 
@@ -13,6 +14,8 @@ interface LimitUpStockCardProps {
 
 export function LimitUpStockCard({ stock, height }: LimitUpStockCardProps) {
   const sealText = stock.sealAmount == null ? NA : fmtYi(stock.sealAmount);
+  // bias_turn 观察 overlay（P0-6）：null/缺省一律不渲染，绝不用占位符暗示"低拥挤"
+  const ratio = stock.biasTurn == null ? null : biasTurnRatio(stock.biasTurn);
 
   return (
     <div
@@ -56,6 +59,18 @@ export function LimitUpStockCard({ stock, height }: LimitUpStockCardProps) {
           </span>
         )}
       </div>
+
+      {/* bias_turn 换手率乖离小标签：拥挤度观察指标，不构成交易信号（页脚有同源声明） */}
+      {ratio != null && (
+        <div className="mt-1 flex items-center">
+          <span
+            className={`num rounded-pill px-1.5 py-px text-2xs ${BIAS_TURN_TONE_CLASS[biasTurnTone(ratio)]}`}
+            title="bias_turn 换手率乖离：近5日日均换手 ÷ 自身近480交易日日均换手。≥3×/≥5× 为暂定绝对档，待重校准；观察指标，不构成交易信号"
+          >
+            热度 {ratio.toFixed(1)}× 平时
+          </span>
+        </div>
+      )}
     </div>
   );
 }

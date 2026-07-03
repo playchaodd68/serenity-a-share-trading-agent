@@ -160,6 +160,12 @@ export default function Ladder() {
           />
         )}
       </div>
+
+      {/* 页脚声明（P0-6 §2e）：bias_turn 是观察 overlay，绝不参与任何评分/排序 */}
+      <p role="note" className="border-t border-line px-5 py-3 text-2xs leading-relaxed text-ink-3">
+        换手率乖离（「热度 X× 平时」= 近5日日均换手 ÷ 自身近480交易日日均换手）为拥挤度观察指标，不构成交易信号；
+        ≥3× 琥珀 / ≥5× 红为暂定绝对档，待自有数据重校准。仅对连板高度 ≥2 的股票计算，缺失即不显示。
+      </p>
     </div>
   );
 }

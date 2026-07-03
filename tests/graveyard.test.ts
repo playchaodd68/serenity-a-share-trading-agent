@@ -9,7 +9,7 @@ import {
 } from "../src/research/graveyard.js";
 import { BEAR_GATE_REFUTED_REASON } from "../src/research/debate/bear-case.js";
 import { scoreCandidate } from "../src/methodology.js";
-import type { AShareStock, Candidate, CandidateResolution, GraveyardEntry } from "../src/types.js";
+import type { AShareStock, Candidate, CandidateResolution, GraveyardEntry, SourceRecord } from "../src/types.js";
 
 const optical: AShareStock = {
   code: "000001",
@@ -24,6 +24,18 @@ const optical: AShareStock = {
   industry: "光通信",
   region: "测试",
   concept: "CPO 硅光 激光器",
+};
+
+// 候选级定向来源：让 optical 处于 evidenceStatus=covered（P0-1 三态）。
+const opticalDirect: SourceRecord = {
+  id: "P1-000001-DIRECT",
+  title: "测试光芯片 客户定点点评",
+  tier: "P1",
+  sourceType: "broker_report",
+  publisher: "test",
+  observedAt: "2026-06-01",
+  summary: "000001 测试光芯片 光芯片订单与认证",
+  evidenceTags: ["000001", "测试光芯片", "candidate-direct"],
 };
 
 function entry(partial: Partial<GraveyardEntry>): GraveyardEntry {
@@ -71,17 +83,38 @@ describe("graveyard", () => {
     expect(graveyard[0].reason).toBe("evidence-gap");
     expect(graveyard[0].code).toBe("000001");
     expect(graveyard[0].matchedThemes.length).toBeGreaterThan(0);
+    // P0-1 死因与排名一致化：evidence-gap 死因是证据缺失，不是分数线。
+    expect(graveyard[0].detail).toContain("证据缺失(非负面)");
+    expect(graveyard[0].detail).toContain("补齐证据后再判");
+    expect(graveyard[0].detail).not.toContain("below entry bar");
+    expect(graveyard[0].detail).not.toContain("未获当日席位");
   });
 
   it("buries medium-confidence candidates below the bar as below-entry-bar (read and passed over)", () => {
     const candidate = { ...scoreCandidate(optical, []), confidence: "medium" as const };
     const graveyard = buryBelowBar([candidate], 999, "2026-06-01T00:00:00.000Z");
     expect(graveyard[0].reason).toBe("below-entry-bar");
+    // P0-2 席位线更名：明示随日漂移的相对席位线，不是校准过的质量线。
+    expect(graveyard[0].detail).toContain("未获当日席位");
+    expect(graveyard[0].detail).toContain("999");
+    expect(graveyard[0].detail).toContain("随日漂移,非质量线");
+    expect(graveyard[0].detail).not.toContain("Passed over below entry bar");
   });
 
-  it("does not bury candidates at or above the entry bar", () => {
-    const candidate = scoreCandidate(optical, []);
+  it("does not bury covered candidates at or above the seat line", () => {
+    const candidate = scoreCandidate(optical, [opticalDirect]);
+    expect(candidate.trace.evidenceStatus).toBe("covered");
     expect(buryBelowBar([candidate], 0, "2026-06-01T00:00:00.000Z")).toHaveLength(0);
+  });
+
+  it("buries evidence-missing candidates regardless of the seat line (P0-1 排名一致化)", () => {
+    const candidate = scoreCandidate(optical, []);
+    expect(candidate.trace.evidenceStatus).toBe("missing");
+    const graveyard = buryBelowBar([candidate], 0, "2026-06-01T00:00:00.000Z");
+    expect(graveyard).toHaveLength(1);
+    expect(graveyard[0].reason).toBe("evidence-gap");
+    expect(graveyard[0].detail).toContain("证据缺失");
+    expect(graveyard[0].detail).not.toContain("below entry bar");
   });
 
   it("buries a low-confidence disqualifier-vetoed candidate as below-entry-bar (read and refuted), never evidence-gap", () => {
@@ -95,7 +128,9 @@ describe("graveyard", () => {
     expect(graveyard).toHaveLength(1);
     expect(graveyard[0].reason).toBe("below-entry-bar");
     expect(graveyard[0].detail).toContain("立案调查");
-    expect(graveyard[0].detail).not.toContain("unread, not refuted");
+    expect(graveyard[0].detail).toContain("主动否决");
+    expect(graveyard[0].detail).toContain("未获当日席位");
+    expect(graveyard[0].detail).not.toContain("证据缺失(非负面)");
   });
 
   it("buries a low-confidence bear-refuted candidate as below-entry-bar, never evidence-gap", () => {

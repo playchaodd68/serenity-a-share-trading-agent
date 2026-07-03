@@ -4,6 +4,7 @@ import type {
   Candidate,
   DisqualifierAssessment,
   EvidenceItem,
+  EvidenceStatus,
   HypeRiskAssessment,
   IndustryLogicAssessment,
   MethodologyTrace,
@@ -252,17 +253,17 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-function combinedResearchText(stock: AShareStock, sources: SourceRecord[], matchedThemes: Candidate["matchedThemes"]): string {
-  return [
-    stock.name,
-    stock.industry,
-    stock.concept,
-    stock.region,
-    ...matchedThemes.flatMap((theme) => [theme.label, ...theme.keywords]),
-    ...sources.map(sourceHaystack),
-  ]
-    .join(" ")
-    .toLowerCase();
+// P0-3 主题关键词自循环修复：matchedThemes 的 label/keywords 不得拼入研究文本——否则
+// "材料/设备/连接器"等词命中主题即自送 NEXT_LAYER_BOTTLENECK_TERMS 分，与 source 证据无关。
+// 研究文本 = 股票自身字段 + 候选相关 source 文本，仅供负面/拥挤/否决类扫描与主线词匹配。
+function combinedResearchText(stock: AShareStock, sources: SourceRecord[]): string {
+  return [stock.name, stock.industry, stock.concept, stock.region, ...sources.map(sourceHaystack)].join(" ").toLowerCase();
+}
+
+// 证据文本：只含 source 内容。瓶颈深度/供需利润/预期差三个证据组件只允许由真实 source
+// 证据文本触发（P0-3）；股票名称与概念标签不是证据。
+function sourceEvidenceText(sources: SourceRecord[]): string {
+  return sources.map(sourceHaystack).join(" ").toLowerCase();
 }
 
 function matchingTerms(text: string, terms: string[]): string[] {
@@ -278,11 +279,12 @@ export function assessIndustryLogic(
   sources: SourceRecord[],
   matchedThemes = matchThemes(stock),
 ): IndustryLogicAssessment {
-  const text = combinedResearchText(stock, sources, matchedThemes);
+  const text = combinedResearchText(stock, sources);
+  const evidenceText = sourceEvidenceText(sources);
   const trendHits = matchingTerms(text, PRIMARY_TREND_TERMS);
-  const bottleneckHits = matchingTerms(text, NEXT_LAYER_BOTTLENECK_TERMS);
-  const supplyHits = matchingTerms(text, SUPPLY_DEMAND_PROFIT_TERMS);
-  const validationHits = matchingTerms(text, EXPECTATION_VALIDATION_TERMS);
+  const bottleneckHits = matchingTerms(evidenceText, NEXT_LAYER_BOTTLENECK_TERMS);
+  const supplyHits = matchingTerms(evidenceText, SUPPLY_DEMAND_PROFIT_TERMS);
+  const validationHits = matchingTerms(evidenceText, EXPECTATION_VALIDATION_TERMS);
   const sourceValidationBoost = sources.some((source) => source.tier === "P0" || source.tier === "P1") ? 2 : 0;
 
   const primaryTrendScore = clamp(matchedThemes.length * 8 + trendHits.length * 1.5, 0, 25);
@@ -384,7 +386,7 @@ export function assessNegativeSignals(
   matchedThemes = matchThemes(stock),
   themes = DEFAULT_THEMES,
 ): NegativeSignalAssessment {
-  const text = combinedResearchText(stock, sources, matchedThemes);
+  const text = combinedResearchText(stock, sources);
   const matchedIds = new Set(matchedThemes.map((match) => match.themeId));
   const matched = themes
     .filter((theme) => matchedIds.has(theme.id))
@@ -404,7 +406,7 @@ export function assessSupplyRelease(
   sources: SourceRecord[],
   matchedThemes = matchThemes(stock),
 ): SupplyReleaseAssessment {
-  const text = combinedResearchText(stock, sources, matchedThemes);
+  const text = combinedResearchText(stock, sources);
   const hitTerms = matchingTerms(text, SUPPLY_RELEASE_TERMS);
   const penalty = clamp(hitTerms.length * SUPPLY_RELEASE_UNIT_PENALTY, 0, SUPPLY_RELEASE_MAX_PENALTY);
   return { hitTerms, penalty };
@@ -426,7 +428,7 @@ export function assessHypeRisk(
   matchedThemes = matchThemes(stock),
   now = new Date().toISOString(),
 ): HypeRiskAssessment {
-  const text = combinedResearchText(stock, sources, matchedThemes);
+  const text = combinedResearchText(stock, sources);
   const hitSignals = matchingTerms(text, HYPE_RISK_TERMS);
   // "Backed by strong evidence" must mean NEW strong evidence: a stale P0/P1 in the
   // registry cannot permanently suppress the reflexivity guard on today's price surge.
@@ -448,7 +450,7 @@ export function assessDisqualifiers(
   sources: SourceRecord[],
   matchedThemes = matchThemes(stock),
 ): DisqualifierAssessment {
-  const text = combinedResearchText(stock, sources, matchedThemes);
+  const text = combinedResearchText(stock, sources);
   const hitSignals = matchingTerms(text, DISQUALIFIER_TERMS);
   if (/ST|\*|退/.test(stock.name)) hitSignals.push(`名称含 ST/*/退（${stock.name}）`);
   return { hitSignals: uniqueStrings(hitSignals), triggered: hitSignals.length > 0 };
@@ -478,7 +480,10 @@ function sourceQualityScore(sources: SourceRecord[]): ScoreComponent {
     name: "source-quality",
     score: clamp(score, 0, 15),
     maxScore: 15,
-    reason: `Candidate-relevant source tiers: ${[...tiers].sort().join(", ") || "none"}.`,
+    reason:
+      sources.length === 0
+        ? "证据缺失(非负面): 无候选相关 source——未读过≠否决，不作低分语义，进证据补齐队列后重评。"
+        : `Candidate-relevant source tiers: ${[...tiers].sort().join(", ")}.`,
     sourceIds: sources.map((source) => source.id),
   };
 }
@@ -497,6 +502,9 @@ export function matchThemes(stock: AShareStock, themes = DEFAULT_THEMES): Candid
 export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], themes = DEFAULT_THEMES): Candidate {
   const matchedThemes = matchThemes(stock, themes);
   const candidateSources = relevantSourcesForCandidate(stock, sources, matchedThemes);
+  // 证据三态（P0-1）：有任一候选相关 source 即 covered；missing 是"没读过"的中性状态，
+  // 三个证据组件的 reason 标注「证据缺失(非负面)」，排名分层由 screener 处理。
+  const evidenceStatus: EvidenceStatus = candidateSources.length > 0 ? "covered" : "missing";
   const industryLogic = assessIndustryLogic(stock, candidateSources, matchedThemes);
   const valuationScore = stock.pe == null ? 4 : stock.pe > 0 && stock.pe < 80 ? 8 : stock.pe >= 80 && stock.pe < 160 ? 4 : 1;
   const marketConfirmationScore = (stock.turnover == null ? 1 : stock.turnover >= 3 ? 3 : stock.turnover >= 1 ? 2 : 0) + ((stock.mainNetInflow ?? 0) > 0 ? 2 : 0);
@@ -529,14 +537,20 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
       name: "supply-demand-profit-elasticity",
       score: industryLogic.supplyDemandProfitScore,
       maxScore: 15,
-      reason: "Scores demand, supply gap, price, unit profit and company elasticity signals before market factors.",
+      reason:
+        evidenceStatus === "missing"
+          ? "证据缺失(非负面): 无候选相关 source，供需/价格/利润弹性无法评估——未读过≠否决。"
+          : "Scores demand, supply gap, price, unit profit and company elasticity signals before market factors.",
       sourceIds: industrySourceIds,
     },
     {
       name: "expectation-gap-validation-window",
       score: industryLogic.expectationGapScore,
       maxScore: 12,
-      reason: industryLogic.validationWindow,
+      reason:
+        evidenceStatus === "missing"
+          ? "证据缺失(非负面): 无候选相关 source，预期差与验证窗口无法评估——未读过≠否决。"
+          : industryLogic.validationWindow,
       sourceIds: industrySourceIds,
     },
     quality,
@@ -629,6 +643,7 @@ export function scoreCandidate(stock: AShareStock, sources: SourceRecord[], them
     priorScore,
     posteriorScore,
     expectedValueScore,
+    evidenceStatus,
     industryLogic,
     components,
     evidence,

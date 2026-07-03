@@ -10,6 +10,7 @@ import {
   type TradingChatSession,
 } from "../chatbot/chatbot.js";
 import {
+  enrichLadderWithBiasTurn,
   fetchLimitUpLadder,
   type LimitUpLadderSnapshot,
   type LimitUpLadderStats,
@@ -50,7 +51,10 @@ export interface PanelServerOptions {
   staticDir?: string;
   /** 面板密码（测试注入用）；默认读 PANEL_PASSWORD，缺省则面板完全开放。 */
   password?: string;
-  /** Injectable ladder fetcher for tests; defaults to fetchLimitUpLadder. */
+  /**
+   * Injectable ladder fetcher for tests（注入值视作"已 enrich 的完整快照"）；
+   * 生产默认 = fetchLimitUpLadder + enrichLadderWithBiasTurn（bias_turn 观察 overlay）。
+   */
   fetchLadder?: (date?: string) => Promise<LimitUpLadderSnapshot>;
   /** Injectable clock for "today" decisions; defaults to () => new Date(). */
   now?: () => Date;
@@ -424,7 +428,10 @@ export async function startPanelServer(options: PanelServerOptions = {}): Promis
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   const staticDir = options.staticDir ?? path.join(rootDir, "panel", "dist");
   const paths = panelPaths(rootDir);
-  const fetchLadder = options.fetchLadder ?? fetchLimitUpLadder;
+  // 现场抓取默认组合 = 涨停池抓取 + bias_turn 观察 overlay enrich（提案 §2e / P0-6）。
+  // enrich 发生在写缓存之前，因此落盘缓存 / 60s memo / 历史读取天然携带 biasTurn，
+  // 读缓存路径永不重算；enrich 单股失败记 null、整体绝不 reject，不会拖垮 /api/ladder。
+  const fetchLadder = options.fetchLadder ?? (async (date?: string) => enrichLadderWithBiasTurn(await fetchLimitUpLadder(date)));
   const now = options.now ?? (() => new Date());
   const port = options.port ?? config.chatPort;
 

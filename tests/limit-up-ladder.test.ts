@@ -1,12 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  BIAS_TURN_BASE_BARS,
+  BIAS_TURN_MIN_BASE_BARS,
   buildLadderSnapshot,
   collectPoolPages,
+  computeBiasTurn,
   computeBrokenRate,
+  enrichLadderWithBiasTurn,
   fetchLimitUpLadder,
   formatLadderReport,
+  type LimitUpStock,
   mapZtPoolRow,
   normalizeLadderDate,
+  parseKlineTurnovers,
   parseZtPoolResponse,
 } from "../src/connectors/limit-up-ladder.js";
 
@@ -204,5 +210,157 @@ describe("normalizeLadderDate", () => {
     expect(normalizeLadderDate("2026-07-02")).toBe("20260702");
     expect(normalizeLadderDate("abc")).toBeUndefined();
     expect(normalizeLadderDate("")).toBeUndefined();
+  });
+});
+
+// ===== bias_turn 换手率乖离（P0-6, docs/criteria-redesign-proposal.md §2e）=====
+// 观察 overlay：仅供梯队页展示，绝不参与任何评分/排序。
+
+describe("computeBiasTurn", () => {
+  it("computes 近5日均 / 近480日均 − 1 from a known turnover series", () => {
+    // 475 根 1.0 + 最近 5 根 5.0：near = 5.0，base = (475×1 + 5×5)/480 = 500/480
+    // bias = 5 / (500/480) − 1 = 4.8 − 1 = 3.8
+    const series = [...Array(475).fill(1), ...Array(5).fill(5)];
+    expect(computeBiasTurn(series)).toBeCloseTo(3.8, 10);
+  });
+
+  it("uses only the trailing 480 bars as the base window", () => {
+    // 480 根之前的天量换手必须被基期窗口丢弃，否则老股乖离被系统性压低
+    const series = [...Array(100).fill(100), ...Array(475).fill(1), ...Array(5).fill(5)];
+    expect(computeBiasTurn(series)).toBeCloseTo(3.8, 10);
+  });
+
+  it("returns 0 when recent turnover equals the long-run average", () => {
+    expect(computeBiasTurn(Array(BIAS_TURN_BASE_BARS).fill(2))).toBeCloseTo(0, 10);
+    expect(computeBiasTurn(Array(BIAS_TURN_MIN_BASE_BARS).fill(2))).toBeCloseTo(0, 10);
+  });
+
+  it("returns null when history is shorter than the minimum base window (次新股)", () => {
+    expect(computeBiasTurn(Array(BIAS_TURN_MIN_BASE_BARS - 1).fill(2))).toBeNull();
+    expect(computeBiasTurn([])).toBeNull();
+  });
+
+  it("returns null when the base mean is zero instead of dividing by zero", () => {
+    expect(computeBiasTurn(Array(480).fill(0))).toBeNull();
+  });
+
+  it("drops non-finite entries instead of poisoning the means", () => {
+    const series = [...Array(475).fill(1), Number.NaN, ...Array(5).fill(5)];
+    expect(computeBiasTurn(series)).toBeCloseTo(3.8, 10);
+  });
+});
+
+describe("parseKlineTurnovers", () => {
+  it("parses date,turnover lines and drops dirty rows", () => {
+    const payload = { rc: 0, data: { klines: ["2026-07-01,1.25", "2026-07-02,-", "2026-07-03,27.67"] } };
+    expect(parseKlineTurnovers(payload)).toEqual([1.25, 27.67]);
+  });
+
+  it("returns [] for a null data envelope (unknown secid)", () => {
+    expect(parseKlineTurnovers({ rc: 0, data: null })).toEqual([]);
+  });
+});
+
+describe("enrichLadderWithBiasTurn", () => {
+  const stock = (code: string, height: number): LimitUpStock => ({
+    code,
+    name: `股票${code}`,
+    industry: "测试",
+    pctChange: 10,
+    height,
+    sealAmount: 1_000_000,
+    brokenCount: 0,
+    firstSealTime: "09:30",
+  });
+
+  const klinePayload = (turnovers: number[]) => ({
+    rc: 0,
+    data: { klines: turnovers.map((value, index) => `2024-01-${String((index % 28) + 1).padStart(2, "0")},${value}`) },
+  });
+
+  it("enriches only stocks with height ≥ 2, records null on per-stock failure, and never mutates the input", async () => {
+    const original = buildLadderSnapshot(
+      [stock("000001", 1), stock("600002", 2), stock("000003", 3), stock("300004", 3)],
+      0,
+      20260702,
+    );
+    const urls: string[] = [];
+    const fetchJson = vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.includes("0.000003")) return klinePayload(Array(30).fill(2)); // 历史不足 → null
+      if (url.includes("0.300004")) throw new Error("kline unavailable"); // 单股失败 → null，不断链
+      return klinePayload([...Array(475).fill(1), ...Array(5).fill(5)]); // 600002 → 3.8
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const enriched = await enrichLadderWithBiasTurn(original, { fetchJson });
+      const byCode = new Map(enriched.ladder.flatMap((tier) => tier.stocks).map((entry) => [entry.code, entry]));
+
+      // 首板不参与计算：字段缺省（undefined），也没有为它发起请求
+      expect("biasTurn" in byCode.get("000001")!).toBe(false);
+      expect(urls.some((url) => url.includes("000001"))).toBe(false);
+      expect(byCode.get("600002")!.biasTurn).toBeCloseTo(3.8, 10);
+      expect(byCode.get("000003")!.biasTurn).toBeNull();
+      expect(byCode.get("300004")!.biasTurn).toBeNull();
+      expect(fetchJson).toHaveBeenCalledTimes(3);
+      expect(warnSpy).toHaveBeenCalled();
+
+      // 请求参数契约：日K、前复权、f61 换手率、480 根、end 锚定快照日期、沪深 secid 前缀
+      const kline600002 = urls.find((url) => url.includes("1.600002"))!;
+      expect(kline600002).toContain("klt=101");
+      expect(kline600002).toContain("fqt=1");
+      expect(kline600002).toContain("f61");
+      expect(kline600002).toContain(`lmt=${BIAS_TURN_BASE_BARS}`);
+      expect(kline600002).toContain("end=20260702");
+      expect(urls.some((url) => url.includes("0.000003"))).toBe(true);
+
+      // 不可变性：原快照的股票对象绝不能被挂上 biasTurn
+      expect(enriched).not.toBe(original);
+      expect(original.ladder.flatMap((tier) => tier.stocks).every((entry) => !("biasTurn" in entry))).toBe(true);
+      // 非 bias 字段原样保留
+      expect(byCode.get("600002")!.sealAmount).toBe(1_000_000);
+      expect(enriched.stats).toEqual(original.stats);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("falls back to a far-future end when the snapshot date is unknown", async () => {
+    const original = buildLadderSnapshot([stock("600002", 2)], 0, null);
+    const urls: string[] = [];
+    const fetchJson = async (url: string) => {
+      urls.push(url);
+      return klinePayload(Array(480).fill(1));
+    };
+    await enrichLadderWithBiasTurn(original, { fetchJson });
+    expect(urls[0]).toContain("end=20500101");
+  });
+
+  it("skips fetching entirely when no stock reaches the height threshold", async () => {
+    const original = buildLadderSnapshot([stock("000001", 1), stock("000005", 1)], 0, 20260702);
+    const fetchJson = vi.fn(async () => klinePayload(Array(480).fill(1)));
+    const enriched = await enrichLadderWithBiasTurn(original, { fetchJson });
+    expect(fetchJson).not.toHaveBeenCalled();
+    expect(enriched).toEqual(original);
+  });
+
+  it("caps in-flight kline requests at the concurrency limit (≤4)", async () => {
+    const stocks = Array.from({ length: 9 }, (_, index) => stock(String(600100 + index), 2 + (index % 2)));
+    const original = buildLadderSnapshot(stocks, 0, 20260702);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchJson = async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return klinePayload([...Array(475).fill(1), ...Array(5).fill(5)]);
+    };
+    const enriched = await enrichLadderWithBiasTurn(original, { fetchJson });
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+    const values = enriched.ladder.flatMap((tier) => tier.stocks).map((entry) => entry.biasTurn);
+    expect(values).toHaveLength(9);
+    for (const value of values) expect(value).toBeCloseTo(3.8, 10);
   });
 });

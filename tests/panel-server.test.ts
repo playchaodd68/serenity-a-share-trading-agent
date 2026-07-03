@@ -475,6 +475,102 @@ describe("panel server", () => {
   });
 });
 
+describe("panel server ladder bias_turn passthrough (P0-6 观察 overlay)", () => {
+  // 生产默认的现场抓取 = fetchLimitUpLadder + enrichLadderWithBiasTurn 组合（写缓存前完成）；
+  // 测试注入的 fetchLadder 即代表"已 enrich 的快照"。这里钉死四条通路的契约：
+  // 响应 / 落盘缓存 / 60s memo / 历史缓存读取 全部原样携带 biasTurn，且缓存路径绝不重抓重算。
+  let root: string;
+  let server: http.Server;
+  let base: string;
+  let fetchCount = 0;
+
+  function enrichedFixture(date: string): LimitUpLadderSnapshot {
+    return {
+      date,
+      ladder: [
+        {
+          height: 3,
+          stocks: [
+            { code: "600001", name: "三连板", industry: "光模块", pctChange: 10, height: 3, sealAmount: 120_000_000, brokenCount: 0, firstSealTime: "09:31", biasTurn: 3.8 },
+            { code: "600003", name: "三连板乙", industry: "PCB", pctChange: 10, height: 3, sealAmount: 90_000_000, brokenCount: 1, firstSealTime: "09:40", biasTurn: null },
+          ],
+        },
+        {
+          height: 1,
+          stocks: [{ code: "600002", name: "首板", industry: "存储", pctChange: 10, height: 1, sealAmount: 30_000_000, brokenCount: 1, firstSealTime: "10:02" }],
+        },
+      ],
+      stats: { limitUpCount: 3, brokenCount: 1, brokenRate: 0.25, maxHeight: 3 },
+    };
+  }
+
+  beforeAll(async () => {
+    delete process.env.PANEL_PASSWORD;
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "panel-bias-"));
+    // 历史缓存 fixture 自带 biasTurn（当天现场抓取时已写入）——读缓存路径必须原样返回、不得重算
+    await fs.mkdir(path.join(root, "runs", "ladder"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "runs", "ladder", "2026-06-25.json"),
+      JSON.stringify({
+        date: "2026-06-25",
+        ladder: [{ height: 2, stocks: [{ code: "600009", name: "历史二板", industry: "军工", pctChange: 10, height: 2, sealAmount: 50_000_000, brokenCount: 0, firstSealTime: "09:35", biasTurn: 1.2 }] }],
+        stats: { limitUpCount: 1, brokenCount: 0, brokenRate: 0, maxHeight: 2 },
+      }),
+    );
+    server = await startPanelServer({
+      port: 0,
+      rootDir: root,
+      fetchLadder: async () => {
+        fetchCount += 1;
+        return enrichedFixture(TODAY);
+      },
+      now: () => new Date(`${TODAY}T05:00:00.000Z`),
+    });
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("serves biasTurn on today's live path and persists it into the disk cache", async () => {
+    const response = await fetch(`${base}/api/ladder`);
+    expect(response.status).toBe(200);
+    const snapshot = (await response.json()) as LimitUpLadderSnapshot;
+    const byCode = new Map(snapshot.ladder.flatMap((tier) => tier.stocks).map((stock) => [stock.code, stock]));
+    expect(byCode.get("600001")!.biasTurn).toBe(3.8);
+    // 单股失败态（null）必须与"未计算"（字段缺省）区分开地穿透到面板
+    expect(byCode.get("600003")!.biasTurn).toBeNull();
+    expect("biasTurn" in byCode.get("600002")!).toBe(false);
+    expect(fetchCount).toBe(1);
+
+    const cached = JSON.parse(await fs.readFile(path.join(root, "runs", "ladder", `${TODAY}.json`), "utf8")) as LimitUpLadderSnapshot;
+    const cachedByCode = new Map(cached.ladder.flatMap((tier) => tier.stocks).map((stock) => [stock.code, stock]));
+    expect(cachedByCode.get("600001")!.biasTurn).toBe(3.8);
+    expect(cachedByCode.get("600003")!.biasTurn).toBeNull();
+  });
+
+  it("does not refetch (nor re-enrich) within the 60s memo window", async () => {
+    const before = fetchCount;
+    const response = await fetch(`${base}/api/ladder?date=${TODAY_COMPACT}`);
+    expect(response.status).toBe(200);
+    const snapshot = (await response.json()) as LimitUpLadderSnapshot;
+    expect(snapshot.ladder[0]!.stocks[0]!.biasTurn).toBe(3.8);
+    expect(fetchCount).toBe(before);
+  });
+
+  it("serves a historical date's biasTurn from the disk cache without refetching", async () => {
+    const before = fetchCount;
+    const response = await fetch(`${base}/api/ladder?date=2026-06-25`);
+    expect(response.status).toBe(200);
+    const snapshot = (await response.json()) as LimitUpLadderSnapshot;
+    expect(snapshot.date).toBe("2026-06-25");
+    expect(snapshot.ladder[0]!.stocks[0]!.biasTurn).toBe(1.2);
+    expect(fetchCount).toBe(before);
+  });
+});
+
 describe("panel server authentication", () => {
   const PASSWORD = "panel-test-secret";
   const FIXED_NOW = () => new Date(`${TODAY}T05:00:00.000Z`);

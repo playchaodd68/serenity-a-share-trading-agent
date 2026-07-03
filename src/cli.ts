@@ -12,10 +12,13 @@ import { downloadFeishuMessageImage, uploadFeishuImage, sendFeishuImageToChat, s
 import { analyzeImagesWithVision, generateImage, downloadImageBytes, type AicodewithMultimodalConfig } from "./multimodal/aicodewith.js";
 import { explainCandidate, findLatestRun, renderFeishuSummary, writeScreenReport } from "./report.js";
 import { initializeKnowledgebase, syncKnowledgebaseSources } from "./rag/obsidian.js";
-import { screenCandidates } from "./screener.js";
+import { UNMATCHED_AUDIT_DIR, screenCandidates } from "./screener.js";
 import { loadSourceRegistry, mergeSources, saveSourceRegistry, seedSourceRegistry } from "./sources/registry.js";
 import { EASTMONEY_SOURCE } from "./connectors/eastmoney.js";
 import { fetchLimitUpLadder, formatLadderReport, normalizeLadderDate } from "./connectors/limit-up-ladder.js";
+import { fetchEarningsExpress, fetchEarningsPreannouncements } from "./connectors/eastmoney-earnings.js";
+import { deriveEarningsEvents, toEvidenceRecords } from "./research/earnings-surprise.js";
+import { archiveConsensusSnapshots } from "./research/consensus-snapshot.js";
 import { runHarness } from "./harness/run.js";
 import { appendJsonl, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import { sendFeishuChatText, sendFeishuMarkdown, sendFeishuOpenIdText, sendFeishuTextByReceiveId } from "./feishu/feishu.js";
@@ -104,7 +107,7 @@ import {
 import { evidenceHasCandidateP0 } from "./research/evidence.js";
 import { buildResolutionCalibration, loadResolutions, renderResolutionCalibration, resolveCandidates, saveResolutions } from "./research/resolution.js";
 import { buildResolutionInputsFromWatchlist, createFfdPriceReturnProvider } from "./research/resolution-provider.js";
-import type { Candidate, GraveyardEntry, ScreenRun, WatchlistEntry } from "./types.js";
+import type { Candidate, GraveyardEntry, ScreenRun, SourceRecord, WatchlistEntry } from "./types.js";
 
 async function ingestSerenity() {
   const config = getConfig();
@@ -539,8 +542,9 @@ async function updateGraveyard(run: ScreenRun, watchlist: WatchlistEntry[], matc
     if (evaluation.fired.length > 0) additions.push(buryKilled(candidate, evaluation.fired, now));
   }
 
-  // Passed-over: matched candidates that scored below the topN cut are the most common
-  // survivorship-bias source; bury them so base rates are not survivor-only.
+  // Passed-over: 未获当日席位的 matched 候选是最常见的幸存者偏差来源，必须入墓。
+  // cutScore 只是当日第 topN 名的分数——相对席位线，随日漂移，非质量线（P0-2），复盘
+  // 禁止当阈值引用；证据缺失（missing）的候选无论分数一律归档（见 buryBelowBar）。
   const cutScore = run.candidates.length > 0 ? Math.min(...run.candidates.map((candidate) => candidate.score)) : 0;
   additions.push(...buryBelowBar(matched, cutScore, now));
 
@@ -554,9 +558,27 @@ async function updateGraveyard(run: ScreenRun, watchlist: WatchlistEntry[], matc
   return merged;
 }
 
+// P0-4(criteria-redesign):业绩预告/快报是法定披露、与分析师覆盖无关的平权证据——
+// 低覆盖股第一条不依赖 source-registry 人工维护的证据来源。失败绝不阻断筛选。
+async function fetchEarningsEvidenceSources(): Promise<SourceRecord[]> {
+  const dateFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const [preanns, expresses] = await Promise.all([
+    fetchEarningsPreannouncements({ dateFrom }),
+    fetchEarningsExpress({ dateFrom }),
+  ]);
+  return toEvidenceRecords(deriveEarningsEvents(preanns, expresses));
+}
+
 async function runScreenPipeline(sendNotification = true) {
   const config = getConfig();
   let sources = mergeSources(await seedSourceRegistry(), [EASTMONEY_SOURCE]);
+  try {
+    const earningsSources = await fetchEarningsEvidenceSources();
+    if (earningsSources.length > 0) sources = mergeSources(sources, earningsSources);
+    console.log(`业绩预告/快报证据: ${earningsSources.length} 条(近90天,平权通道)`);
+  } catch (error) {
+    console.warn(`earnings evidence fetch failed (screen continues): ${error instanceof Error ? error.message : String(error)}`);
+  }
   await saveSourceRegistry(sources);
   let matched: Candidate[] = [];
   const collectMatched = (candidates: Candidate[]) => {
@@ -564,7 +586,7 @@ async function runScreenPipeline(sendNotification = true) {
   };
   const bearCases = await loadBearCases();
   const graveyardContext = await loadGraveyard();
-  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched, evidenceQueuePath: EVIDENCE_QUEUE_PATH });
+  const preliminaryRun = await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched, evidenceQueuePath: EVIDENCE_QUEUE_PATH, unmatchedAuditDir: UNMATCHED_AUDIT_DIR });
   const cninfo = await fetchCninfoAnnualReportSourcesForCandidates(preliminaryRun.candidates.slice(0, Math.min(8, preliminaryRun.candidates.length)));
   if (cninfo.warnings.length > 0) {
     for (const warning of cninfo.warnings) console.warn(`CNINFO P0 fetch warning: ${warning}`);
@@ -575,7 +597,7 @@ async function runScreenPipeline(sendNotification = true) {
   }
   const run =
     cninfo.sources.length > 0
-      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched, evidenceQueuePath: EVIDENCE_QUEUE_PATH })
+      ? await screenCandidates(sources, { maxRows: config.aShareMaxRows, topN: config.aShareTopN, bearCases, graveyard: graveyardContext, onMatched: collectMatched, evidenceQueuePath: EVIDENCE_QUEUE_PATH, unmatchedAuditDir: UNMATCHED_AUDIT_DIR })
       : preliminaryRun;
   const completed = await writeScreenReport(run);
   try {
@@ -623,9 +645,37 @@ async function screen() {
   console.log(renderGraveyardSummary(result.graveyard));
 }
 
+// P0-5(criteria-redesign):一致预期 F10 为逐股接口,只存跟踪池(watchlist+持仓+最新候选+证据队列),
+// 每日快照攒历史——P1 的预期修正因子(四阶段/三指标交集)依赖 6-12 个月序列,晚一天少一天。
+async function collectConsensusTrackingCodes(): Promise<string[]> {
+  const codes = new Set<string>();
+  for (const entry of await loadWatchlist()) codes.add(entry.code);
+  const { portfolio } = await loadPortfolio();
+  for (const position of portfolio?.positions ?? []) codes.add(position.code);
+  const latestRun = await findLatestRun();
+  for (const candidate of latestRun?.candidates ?? []) codes.add(candidate.stock.code);
+  const queue = await readJsonFile<EvidenceQueue | null>(EVIDENCE_QUEUE_PATH, null);
+  for (const entry of queue?.entries ?? []) codes.add(entry.code);
+  return [...codes].sort();
+}
+
+async function consensusArchive(): Promise<string> {
+  const codes = await collectConsensusTrackingCodes();
+  if (codes.length === 0) return "跟踪池为空,跳过一致预期存档。";
+  const result = await archiveConsensusSnapshots(codes);
+  if (result.skipped) return `一致预期快照今日已存在,跳过(${result.path})。`;
+  const counts = result.counts ? `(ok ${result.counts.ok} / 无覆盖 ${result.counts.uncovered} / 失败 ${result.counts.failed})` : "";
+  return `一致预期快照已存档: ${codes.length} 只跟踪池 → ${result.path}${counts}。`;
+}
+
 async function dailyRun() {
   await ingestSerenity();
   await screen();
+  try {
+    console.log(await consensusArchive());
+  } catch (error) {
+    console.warn(`consensus archive failed (daily-run continues): ${error instanceof Error ? error.message : String(error)}`);
+  }
   const doctorReport = await diagnoseRuntime();
   await appendJsonl("runs/doctor.jsonl", {
     type: "doctor",
@@ -1602,6 +1652,9 @@ async function main() {
     case "daily-run":
       await dailyRun();
       break;
+    case "consensus-archive":
+      console.log(await consensusArchive());
+      break;
     case "run-harness":
       await harness();
       break;
@@ -1642,7 +1695,7 @@ async function main() {
       console.log(await archiveFfdSignalCommand(process.argv.slice(3).join(" ")));
       break;
     default:
-      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|evidence-queue|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|doctor|cron|run-harness|feishu-server|chat|chat-server|panel-server|agent>");
+      console.log("Usage: tsx src/cli.ts <ingest-serenity|init-obsidian|screen|research-refresh|watchlist|calibration|evals|ladder|evidence-queue|quant-adapt-history|quant-backtest|ffd-auto-rules|ffd-smoke|ffd-signal|ffd-set-key|reports-convert|reports-enhance|reports-review|reports-accept|reports-accept-quality|reports-organize-obsidian|reports-reject|daily-run|consensus-archive|doctor|cron|run-harness|feishu-server|chat|chat-server|panel-server|agent>");
       process.exitCode = 1;
   }
 }

@@ -76,7 +76,8 @@ describe("methodology scoring", () => {
       sourceType: "primary",
       publisher: "CNINFO",
       observedAt: "2026-06-01",
-      summary: "测试硅光披露 CPO、硅光、激光器客户验证与产能建设，订单、需求、供给缺口、价格、毛利、净利和 Q2 业绩兑现。",
+      // P0-3 后瓶颈/供需/预期差词只由 source 证据文本触发，年报摘要需自带卡点证据。
+      summary: "测试硅光披露 CPO、硅光、激光器与光芯片良率爬坡、测试设备认证通过，客户验证与产能建设，订单、需求、供给缺口、价格、毛利、净利和 Q2 业绩兑现。",
       evidenceTags: ["688999", "测试硅光", "CPO", "硅光", "candidate-direct"],
     };
     const p1: SourceRecord = {
@@ -115,7 +116,8 @@ describe("methodology scoring", () => {
     const logic = assessIndustryLogic(stock, []);
     const candidate = scoreCandidate(stock, []);
     expect(logic.primaryTrendScore).toBeGreaterThan(15);
-    expect(logic.bottleneckDepthScore).toBeGreaterThan(10);
+    // P0-3：无 source 时瓶颈深度只剩主题存在加成（+2），概念标签不再自送瓶颈词分。
+    expect(logic.bottleneckDepthScore).toBe(2);
     expect(candidate.trace.components[0].name).toBe("industry-trend-primacy");
     expect(candidate.trace.components.find((item) => item.name === "market-confirmation")?.maxScore).toBe(5);
   });
@@ -249,5 +251,71 @@ describe("methodology scoring", () => {
     expect(relevantIds).not.toContain("SERENITY-REPLY-DISTILLATION-20260530");
     expect(relevantIds).not.toContain("SERENITY-REPLY-EVALS-20260530");
     expect(scoreCandidate(optical, SEED_SOURCES).confidence).not.toBe("high");
+  });
+});
+
+describe("evidence tri-state and theme-keyword self-loop (P0-1/P0-3)", () => {
+  // concept 里的词同时是主题关键词和瓶颈词（光芯片/硅光/激光器），用来证明自循环已拆除。
+  const themed: AShareStock = {
+    code: "000010",
+    name: "测试样本",
+    latestPrice: 10,
+    pctChange: 1,
+    totalMarketCap: 20_000_000_000,
+    floatMarketCap: 10_000_000_000,
+    pe: 35,
+    turnover: 4,
+    mainNetInflow: 1_000_000,
+    industry: "光通信",
+    region: "测试",
+    concept: "CPO 硅光 激光器 光芯片",
+  };
+
+  it("does not score bottleneckDepth from theme keywords or stock tags without sources (P0-3)", () => {
+    const logic = assessIndustryLogic(themed, []);
+    expect(logic.bottleneckDepthScore).toBe(2);
+    expect(logic.supplyDemandProfitScore).toBe(0);
+    expect(logic.expectationGapScore).toBe(0);
+  });
+
+  it("lets real source evidence text trigger bottleneckDepth", () => {
+    const src: SourceRecord = {
+      id: "P1-000010-EVIDENCE",
+      title: "测试样本 卡点研报",
+      tier: "P1",
+      sourceType: "broker_report",
+      publisher: "test",
+      observedAt: "2026-07-01",
+      summary: "000010 测试样本 光芯片良率与测试设备认证是核心卡点。",
+      evidenceTags: ["000010", "测试样本", "candidate-direct"],
+    };
+    const logic = assessIndustryLogic(themed, [src]);
+    expect(logic.bottleneckDepthScore).toBeGreaterThan(2);
+  });
+
+  it("marks candidates without any relevant source as evidence-missing, not low-scored negatives", () => {
+    const candidate = scoreCandidate(themed, []);
+    expect(candidate.trace.evidenceStatus).toBe("missing");
+    for (const name of ["supply-demand-profit-elasticity", "expectation-gap-validation-window", "source-quality"]) {
+      const component = candidate.trace.components.find((item) => item.name === name);
+      expect(component?.reason).toContain("证据缺失(非负面)");
+    }
+  });
+
+  it("marks candidates with any relevant source as covered", () => {
+    const direct: SourceRecord = {
+      id: "P1-000010-DIRECT",
+      title: "测试样本 定点点评",
+      tier: "P1",
+      sourceType: "broker_report",
+      publisher: "test",
+      observedAt: "2026-07-01",
+      summary: "000010 测试样本 光模块订单",
+      evidenceTags: ["000010", "测试样本", "candidate-direct"],
+    };
+    const candidate = scoreCandidate(themed, [direct]);
+    expect(candidate.trace.evidenceStatus).toBe("covered");
+    const quality = candidate.trace.components.find((item) => item.name === "source-quality");
+    expect(quality?.reason).not.toContain("证据缺失");
   });
 });

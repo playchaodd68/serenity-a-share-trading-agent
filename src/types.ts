@@ -1,6 +1,10 @@
 export type SourceTier = "P0" | "P1" | "P2";
 export type EvidencePolarity = "positive" | "negative" | "neutral";
 export type ConfidenceLevel = "low" | "medium" | "high";
+// 证据三态（P0-1）："没读过"（missing）与"读过但不行"是不同状态，不再共用低分。
+// covered = 存在任一候选相关 source；missing = 证据缺失（非负面），不占 topN 席位、
+// 不给买入语义，进「高先验·证据缺失」独立区块与证据补齐队列。
+export type EvidenceStatus = "covered" | "missing";
 export type ResearchEvidenceKind =
   | "primary-filing"
   | "broker-report"
@@ -123,6 +127,8 @@ export interface MethodologyTrace {
   priorScore: number;
   posteriorScore: number;
   expectedValueScore: number;
+  // 证据三态标注（P0-1）。Optional：历史 run artifacts 无此字段，读取时按 covered 兼容。
+  evidenceStatus?: EvidenceStatus;
   industryLogic?: IndustryLogicAssessment;
   components: ScoreComponent[];
   evidence: EvidenceItem[];
@@ -312,12 +318,26 @@ export interface QuantScreenSummary {
   notes: string[];
 }
 
+// 「高先验·证据缺失」独立区块条目（P0-1）：evidenceStatus=missing 且 priorScore 位于当日
+// missing 组前列的候选。不占 topN 席位、不给买入语义——证据缺失 ≠ 否决，补齐证据后再判。
+export interface EvidenceMissingHighPriorEntry {
+  code: string;
+  name: string;
+  industry: string;
+  priorScore: number;
+  score: number;
+  confidence: ConfidenceLevel;
+  matchedThemes: string[];
+}
+
 export interface ScreenRun {
   runId: string;
   generatedAt: string;
   candidates: Candidate[];
   totalStocksScanned: number;
   sourceCount: number;
+  // 高先验·证据缺失独立区块（P0-1），与 candidates（当日席位）分层呈现、绝不混排。
+  evidenceMissingHighPrior?: EvidenceMissingHighPriorEntry[];
   quantSummary?: QuantScreenSummary;
   // Forced hot-theme downgrade slot: every screen must rank theme heat and state which
   // popular direction is deliberately downgraded (or why none qualifies).

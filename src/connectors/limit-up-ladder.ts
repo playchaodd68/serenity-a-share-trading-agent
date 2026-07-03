@@ -63,6 +63,13 @@ export interface LimitUpStock {
   brokenCount: number;
   /** 首次封板时间 "HH:MM" (fbt); empty string when unavailable. */
   firstSealTime: string;
+  /**
+   * bias_turn 换手率乖离 = 近5日日均换手率 / 自身近480交易日日均换手率 − 1
+   * （提案 §2e / P0-6，华泰13+资金C组，负向单调性 0.92）。观察 overlay：仅供梯队页
+   * 展示拥挤度，绝不参与任何评分/排序。仅对连板高度 ≥2 的股票补算（控制请求量）；
+   * null = 抓取失败或上市历史不足；字段缺省 = 未参与计算（<2板或未走 enrich 路径）。
+   */
+  biasTurn?: number | null;
 }
 
 export interface LadderTier {
@@ -284,6 +291,134 @@ export async function fetchLimitUpLadder(date?: string): Promise<LimitUpLadderSn
     console.warn(`Eastmoney 炸板池 fetch failed; broken rate omitted. Reason: ${error instanceof Error ? error.message : String(error)}`);
   }
   return buildLadderSnapshot(zt.rows.map(mapZtPoolRow), brokenCount, zt.qdate);
+}
+
+// ===== bias_turn 换手率乖离 enrich（提案 §2e / P0-6）=====
+// 定义：bias_turn = 近5日日均换手率 / 自身近2年(≈480交易日)日均换手率 − 1。
+// 数据源：东财 push2his 日K（klt=101 日频、fqt=1 前复权）。fields2 字段以 2026-07-03
+// curl 实测为准（secid=1.600519）：f51=日期 f52=开 f53=收 f54=高 f55=低 f56=成交量(手)
+// f57=成交额 f58=振幅 f59=涨跌幅 f60=涨跌额 f61=换手率(%) —— 交叉核对：贵州茅台
+// 2026-06-22 成交 58251手=582.5万股 ÷ 总股本12.56亿股 ≈ 0.464%，与返回值 0.47 一致，
+// 确认 f61 即换手率、无需 f56/自由流通股本 近似。同时实测 end+lmt（不带 beg）组合
+// 返回"截至 end 的最近 lmt 根"，一次请求同时覆盖近5日与480日两个窗口。
+// 观察 overlay 铁律：本段代码只产出展示字段，绝不参与任何评分/排序。
+
+// 窗口与门槛常量：近5日 / 近480交易日为提案口径；基期不足 60 根（约一个季度，次新股）
+// 时"自身平时水位"没有统计意义，记 null 不算。窗口/阈值均为研报方向性参考，待自有数据重校准。
+export const BIAS_TURN_NEAR_BARS = 5;
+export const BIAS_TURN_BASE_BARS = 480;
+export const BIAS_TURN_MIN_BASE_BARS = 60;
+/** 只对连板高度 ≥2 的股票拉日K（全池 ~百只，≥2板通常 ~20 只，控制请求量）。 */
+const BIAS_TURN_MIN_HEIGHT = 2;
+/** 小并发上限：对 push2his 温和一些，避免触发限速拖垮整个梯队请求。 */
+const BIAS_TURN_CONCURRENCY = 4;
+
+const KlineResponse = z.object({
+  data: z
+    .object({
+      klines: z.array(z.string()),
+    })
+    .nullable(),
+});
+
+/** 6开头=沪市(1.), 其余=深市(0.) — mirrors connectors/eastmoney.ts secidForCode. */
+function secidForCode(code: string): string {
+  return `${code.startsWith("6") ? "1" : "0"}.${code}`;
+}
+
+/** endCompact = YYYYMMDD 锚定快照日；只取 f51 日期 + f61 换手率，压缩响应体。 */
+function biasTurnKlineUrl(secid: string, endCompact: string): string {
+  const params = new URLSearchParams({
+    secid,
+    fields1: "f1,f2,f3,f4,f5,f6",
+    fields2: "f51,f61",
+    klt: "101",
+    fqt: "1",
+    end: endCompact,
+    lmt: String(BIAS_TURN_BASE_BARS),
+  });
+  return `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`;
+}
+
+/** kline line = "YYYY-MM-DD,换手率"；脏行（"-"、缺列）直接丢弃，不污染均值。 */
+export function parseKlineTurnovers(payload: unknown): number[] {
+  const parsed = KlineResponse.parse(payload);
+  if (!parsed.data) return [];
+  return parsed.data.klines
+    .map((line) => Number(line.split(",")[1]))
+    .filter((value) => Number.isFinite(value));
+}
+
+/**
+ * bias_turn = mean(近 NEAR 根) / mean(近 BASE 根) − 1。
+ * 输入为按时间升序的日换手率序列；历史不足最小基期或基期均值为 0（长期停牌）时返回 null。
+ */
+export function computeBiasTurn(turnovers: number[]): number | null {
+  const valid = turnovers.filter((value) => Number.isFinite(value));
+  if (valid.length < BIAS_TURN_MIN_BASE_BARS) return null;
+  const base = valid.slice(-BIAS_TURN_BASE_BARS);
+  const near = valid.slice(-BIAS_TURN_NEAR_BARS);
+  const baseMean = base.reduce((sum, value) => sum + value, 0) / base.length;
+  if (baseMean <= 0) return null;
+  const nearMean = near.reduce((sum, value) => sum + value, 0) / near.length;
+  return nearMean / baseMean - 1;
+}
+
+/** 固定 worker 数的小并发 map；fn 自行捕获错误，绝不 reject。 */
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await fn(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+}
+
+export interface EnrichBiasTurnOptions {
+  /** Injectable kline transport for deterministic tests; defaults to the module's fetch→curl chain. */
+  fetchJson?: (url: string) => Promise<unknown>;
+  /** In-flight request cap; defaults to BIAS_TURN_CONCURRENCY (4). */
+  concurrency?: number;
+}
+
+/**
+ * 给快照中连板高度 ≥2 的股票补 biasTurn（观察 overlay，不改任何既有字段/排序）。
+ * 返回新快照对象，绝不修改入参；单股失败记 null 并 warn，不会使整条梯队链路失败。
+ */
+export async function enrichLadderWithBiasTurn(
+  snapshot: LimitUpLadderSnapshot,
+  options: EnrichBiasTurnOptions = {},
+): Promise<LimitUpLadderSnapshot> {
+  const fetchJson = options.fetchJson ?? fetchPoolJson;
+  const concurrency = options.concurrency ?? BIAS_TURN_CONCURRENCY;
+  const targets = snapshot.ladder.flatMap((tier) => tier.stocks).filter((stock) => stock.height >= BIAS_TURN_MIN_HEIGHT);
+  if (targets.length === 0) {
+    return { ...snapshot, ladder: snapshot.ladder.map((tier) => ({ ...tier, stocks: [...tier.stocks] })) };
+  }
+  // 快照日期即 K 线 end 锚点；"unknown"（非交易日/空池）退化为远期上界=取最新历史。
+  const endCompact = normalizeLadderDate(snapshot.date) ?? "20500101";
+  const biasByCode = new Map<string, number | null>();
+  await mapWithConcurrency(targets, concurrency, async (stock) => {
+    try {
+      const payload = await fetchJson(biasTurnKlineUrl(secidForCode(stock.code), endCompact));
+      biasByCode.set(stock.code, computeBiasTurn(parseKlineTurnovers(payload)));
+    } catch (error) {
+      console.warn(
+        `bias_turn 日K抓取失败（${stock.code}），该股记 null 不断链。Reason: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      biasByCode.set(stock.code, null);
+    }
+  });
+  return {
+    ...snapshot,
+    ladder: snapshot.ladder.map((tier) => ({
+      ...tier,
+      stocks: tier.stocks.map((stock) => (biasByCode.has(stock.code) ? { ...stock, biasTurn: biasByCode.get(stock.code)! } : stock)),
+    })),
+  };
 }
 
 const REPORT_MAX_STOCKS_PER_TIER = 8;

@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { Candidate, ScreenRun } from "./types.js";
+import type { Candidate, EvidenceMissingHighPriorEntry, ScreenRun } from "./types.js";
 import { ensureDir, readJsonFile, writeJsonFile } from "./utils/fs.js";
 import fs from "node:fs/promises";
 import { summarizeSupplyChainGraph } from "./research/graph.js";
@@ -87,6 +87,19 @@ ${nextActionMarkdown(candidate)}
 `;
 }
 
+// 「高先验·证据缺失」独立区块（P0-1）：不占当日席位、不给买入语义。证据缺失 ≠ 否决——
+// "没读过"与"读过并否决"是不同死因，这批标的排队补材料后再判。
+function evidenceMissingMarkdown(entries: EvidenceMissingHighPriorEntry[]): string {
+  if (entries.length === 0) return "- 本轮无高先验·证据缺失候选（匹配候选均有证据覆盖）。";
+  const framing =
+    "> 证据缺失 ≠ 否决：以下标的先验命中主题、当日 missing 组先验分前列，但无任何候选相关 source——「没读过」不是「读过并否决」。不占当日席位、不给买入语义；已进入证据补齐队列，补齐证据后再判。";
+  const lines = entries.map(
+    (entry, index) =>
+      `${index + 1}. ${entry.code} ${entry.name} · 先验分 ${entry.priorScore.toFixed(1)} · 证据分 ${entry.score.toFixed(1)} · ${entry.industry || "行业 n/a"} · 主题: ${entry.matchedThemes.join("、") || "-"}`,
+  );
+  return [framing, "", ...lines].join("\n");
+}
+
 export function renderScreenReport(run: ScreenRun): string {
   return `# A股产业瓶颈候选筛选
 
@@ -104,6 +117,10 @@ ${renderCompleteness(evaluateCompleteness(run))}
 ## 热门降级（强制输出槽）
 
 ${renderHotThemeDowngrades(run.hotThemeDowngrades ?? [])}
+
+## 高先验·证据缺失（独立区块，不占席位）
+
+${evidenceMissingMarkdown(run.evidenceMissingHighPrior ?? [])}
 
 ${run.candidates.map(candidateMarkdown).join("\n")}
 `;
